@@ -1,6 +1,6 @@
 {
     "DevWorkspaceID": "b42dfb7f-667e-48f9-97c9-12198c700e09",
-    "ProdWorkspaceID": "436d60a0-3a50-480d-b7e5-f7a9d3cd5fb5",
+    "ProdWorkspaceID": "cb0a4bb8-e16a-4886-b803-4dcceda22cd0",
     "DevWarehouseConnection": "2kg5tzezshsufoul3i7hmpw6fy-p75s3nd6m34urf6jcimyy4aobe.datawarehouse.fabric.microsoft.com",
     "ProdWarehouseConnection": "2kg5tzezshsufoul3i7hmpw6fy-xbfqvs3k4gderoadjxgo3irm2a.datawarehouse.fabric.microsoft.com",
     "DevWarehouseName": "WH_Sales",       
