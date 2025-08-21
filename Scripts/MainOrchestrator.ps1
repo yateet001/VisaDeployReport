@@ -26,11 +26,11 @@ function Get-SPNToken {
         [Parameter(Mandatory=$true)]
         [string]$ClientSecret,
         
-        [string]$Scope = "Fabric" # "Fabric" or "PowerBI"
+        [string]$ApiType = "Fabric" # "Fabric" or "PowerBI"
     )
     
     try {
-        if ($Scope -eq "PowerBI") {
+        if ($ApiType -eq "PowerBI") {
             Write-Host "Acquiring access token for Power BI API..."
             $body = @{
                 grant_type    = "client_credentials"
@@ -52,15 +52,40 @@ function Get-SPNToken {
             }
             
             $tokenResponse = Invoke-RestMethod -Uri "https://login.microsoftonline.com/$TenantId/oauth2/v2.0/token" -Method Post -Body $body
-            $accessToken = $tokenResponse.access_token
+            $tokenResponse.access_token
             Write-Host "✓ Successfully acquired Fabric API access token"
         }
         
         return $accessToken
     }
     catch {
-        Write-Error "Failed to acquire access token for $Scope API: $_"
-        throw "Could not acquire access token"
+        Write-Error "Failed to acquire access token for $ApiType API: $_"
+        
+        # If Fabric API fails, try the fallback approach from your original code
+        if ($ApiType -eq "Fabric") {
+            try {
+                Write-Host "Trying Power BI API scope as fallback..."
+                
+                $body = @{
+                    grant_type    = "client_credentials"
+                    client_id     = $ClientId
+                    client_secret = $ClientSecret
+                    resource      = "https://analysis.windows.net/powerbi/api"
+                }
+                
+                $tokenResponse = Invoke-RestMethod -Uri "https://login.microsoftonline.com/$TenantId/oauth2/token" -Method Post -Body $body
+                $accessToken = $tokenResponse.access_token
+                
+                Write-Host "✓ Successfully acquired Power BI API access token as fallback"
+                return $accessToken
+            }
+            catch {
+                Write-Error "Failed to acquire Power BI API access token: $_"
+                throw "Could not acquire any access token"
+            }
+        } else {
+            throw "Could not acquire $ApiType access token"
+        }
     }
 }
 
@@ -968,18 +993,23 @@ try {
 
     Write-Host "Target Workspace ID: $targetWorkspaceId"
 
-    # Get Fabric API Access Token (for Items API)
-$fabricAccessToken = Get-SPNToken -TenantId $tenantId -ClientId $clientId -ClientSecret $clientSecret -Scope "Fabric"
-if (-not $fabricAccessToken) {
-    throw "Failed to obtain Fabric API access token"
-}
+ # Get Fabric API Access Token (primary token for Items API)
+    $fabricAccessToken = Get-SPNToken -TenantId $tenantId -ClientId $clientId -ClientSecret $clientSecret -ApiType "Fabric"
+    if (-not $fabricAccessToken) {
+        throw "Failed to obtain Fabric API access token. Check TenantID/ClientID/ClientSecret and app permissions."
+    }
 
-# Get Power BI API Access Token (for rebind operations)
-$powerBIAccessToken = Get-SPNToken -TenantId $tenantId -ClientId $clientId -ClientSecret $clientSecret -Scope "PowerBI"
-if (-not $powerBIAccessToken) {
-    Write-Warning "Failed to obtain Power BI API access token - rebind operations may fail"
-    $powerBIAccessToken = $fabricAccessToken # Use Fabric token as fallback
-}
+        # Get Power BI API Access Token (for rebind operations)
+    $powerBIAccessToken = $null
+    try {
+        $powerBIAccessToken = Get-SPNToken -TenantId $tenantId -ClientId $clientId -ClientSecret $clientSecret -ApiType "PowerBI"
+    } catch {
+        Write-Warning "Failed to obtain Power BI API access token - using Fabric token as fallback: $_"
+        $powerBIAccessToken = $fabricAccessToken
+    }
+
+    Write-Host "Using Fabric token for primary operations"
+    Write-Host "Using Power BI token for rebind operations"
 
 
     # Set artifact path
@@ -1035,7 +1065,7 @@ if (-not $powerBIAccessToken) {
         }
         Write-Host "Using connection -> Server: $serverName | Database: $databaseName"
 
-        $deploymentSuccess = Deploy-PBIPUsingFabricAPI -PBIPFilePath $pbipFile.FullName -ReportName $reportName -WorkspaceId $targetWorkspaceId -AccessToken $accessToken -ServerName $serverName -DatabaseName $databaseName
+        $deploymentSuccess = Deploy-PBIPUsingFabricAPI -PBIPFilePath $pbipFile.FullName -ReportName $reportName -WorkspaceId $targetWorkspaceId -AccessToken $fabricAccessToken -ServerName $serverName -DatabaseName $databaseName
         
         $result = [PSCustomObject]@{
             ReportName = $reportName
