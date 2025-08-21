@@ -1,11 +1,11 @@
 variables:
   Env: "DEV"
-  KeyVaultName: "KeyVaultName"
-  AdfAzureServiceConnection: "ConnectionName"
-  SpnSecretName: ""
-  BuildPipelineName: "BuildPipelineName"
+  BuildPipelineName: "Visa"
   ArtifactName: "Fabric"
+  tenant_id: $(tenant_id)
+  client_id: $(client_id)
+  client_secret: $(client_secret)
   Connections: >
     {"Connections": [
-       {"connection_name": "WH_Sales", "type": "Fabric Warehouse"}
-     ]}
+      {"connection_name": "Arjun_EMPN1689", "type": "Lakehouse"}
+    ]}

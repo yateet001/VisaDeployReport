@@ -1,6 +1,7 @@
 import requests
 import time
 from datetime import datetime, timezone
+import random # Import for jitter
 
 def create_environment(workspace_id, access_token, display_name, description):
     """
@@ -59,17 +60,17 @@ def publish_environment(workspace_id, artifact_id, access_token):
         raise Exception(f"Error publishing environment: {str(e)}")
 
 
-def poll_environment_publish_status(workspace_id, artifact_id, access_token, polling_interval=60, maximum_duration=1200):
+def poll_environment_publish_status(workspace_id, artifact_id, access_token, initial_poll_interval=15, max_poll_interval=300, maximum_duration=1200):
     """
-    Polls the environment publish status at given intervals.
-    Uses a 5-minute interval for the first 10 minutes, then switches to the provided polling_interval.
+    Polls the environment publish status using exponential backoff with jitter.
     Stops polling as soon as the status changes from 'Running' or when the maximum duration is exceeded.
 
     Parameters:
         workspace_id (str): The ID of the workspace.
         artifact_id (str): The ID of the environment.
         access_token (str): The service principal access token for authentication.
-        polling_interval (int): Time in seconds between each poll after the first 10 minutes (default: 60 seconds).
+        initial_poll_interval (int): Initial time in seconds between polls (default: 15 seconds).
+        max_poll_interval (int): Maximum time in seconds between polls (default: 300 seconds).
         maximum_duration (int): Maximum duration in seconds to poll (default: 1200 seconds).
 
     Returns:
@@ -85,6 +86,7 @@ def poll_environment_publish_status(workspace_id, artifact_id, access_token, pol
     }
 
     elapsed_time = 0
+    current_poll_interval = initial_poll_interval
 
     while elapsed_time < maximum_duration:
         try:
@@ -95,23 +97,24 @@ def poll_environment_publish_status(workspace_id, artifact_id, access_token, pol
             # Extract the current publish state from the API response
             current_state = result.get("properties", {}).get("publishDetails", {}).get("state", None)
 
+            print(f"Polling environment publish status for {artifact_id}. Current state: {current_state}")
+
             # Stop polling if the state is not 'Running'
             if current_state != "Running":
                 return current_state
 
-        except Exception as e:
-            raise(f"Error getting environment publish status: {str(e)}")
+        except requests.exceptions.RequestException as e:
+            print(f"Error getting environment publish status, retrying: {str(e)}")
+            # Do not re-raise immediately; allow polling to continue for transient errors
 
-        # Use a 5-minute interval for the first 10 minutes, then the provided polling_interval
-        if elapsed_time < 600:
-            sleep_interval = 300  # 5 minutes
-        else:
-            sleep_interval = polling_interval
+        # Apply exponential backoff with jitter
+        sleep_duration = min(current_poll_interval + random.uniform(0, current_poll_interval * 0.2), max_poll_interval)
+        print(f"Waiting for {sleep_duration:.2f} seconds before next poll...")
+        time.sleep(sleep_duration)
+        elapsed_time += sleep_duration
+        current_poll_interval = min(current_poll_interval * 2, max_poll_interval) # Double for exponential backoff
 
-        time.sleep(sleep_interval)
-        elapsed_time += sleep_interval
-
-    raise Exception("Maximum polling duration exceeded without status change.")
+    raise Exception(f"Maximum polling duration ({maximum_duration} seconds) exceeded for environment {artifact_id} without status change. Last state: {current_state}")
 
 
 def update_default_environment(workspace_id, access_token, environment_name, runtime_version):
@@ -151,7 +154,7 @@ def update_default_environment(workspace_id, access_token, environment_name, run
 
 def deploy_custom_environment(workspace_id, access_token):
     """
-    Deploys a custom environment to a workspace, including creating the environment, 
+    Deploys a custom environment to a workspace, including creating the environment,
     uploading a library, publishing the environment, and setting it as the default environment.
 
     Parameters:
@@ -163,21 +166,28 @@ def deploy_custom_environment(workspace_id, access_token):
     """
     try:
         env_name = "Spark_Environment"
-        artifact_deployment_time = datetime.now(timezone.utc)
+        
         # Create the environment
+        print(f"Creating custom environment '{env_name}' in workspace '{workspace_id}'...")
         artifact_id = create_environment(workspace_id, access_token, env_name, None)
+        print(f"Environment '{env_name}' created with ID: {artifact_id}.")
 
         # Publish the environment
+        print(f"Publishing environment '{env_name}'...")
         publish_environment(workspace_id, artifact_id, access_token)
+        print(f"Publish request for environment '{env_name}' sent.")
 
         # Check publish status
+        print(f"Polling publish status for environment '{env_name}'...")
         publish_status = poll_environment_publish_status(workspace_id, artifact_id, access_token)
 
-        if publish_status.lower() == "success":
+        if publish_status and publish_status.lower() == "success":
+            print(f"Environment '{env_name}' published successfully. Setting as default...")
             # Set the environment as the default
             update_default_environment(workspace_id, access_token, env_name, "1.3")
+            print(f"Environment '{env_name}' set as default successfully.")
         else:
-            raise Exception("Error in publishing environment.")
+            raise Exception(f"Error in publishing environment '{env_name}'. Final status: {publish_status}")
     except Exception as e:
         error_message = f"Error occurred while deploying custom environment: {str(e)}"
         raise Exception(error_message)
