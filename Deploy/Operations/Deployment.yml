@@ -9,7 +9,6 @@ parameters:
     - "DEV"
     - "QA"
 
-
 - name: Environment_Type 
   displayName: "Environment_Type"
   type: string
@@ -29,7 +28,7 @@ parameters:
   default: ""
 
 variables:
-  - template: /Deploy/Config/CONFIG_${{parameters.Deployment_Environment}}.yml
+- template: /Deploy/Config/CONFIG_${{parameters.Deployment_Environment}}.yml
 
 stages:
 - stage: Approval_Stage_${{parameters.Deployment_Environment}}
@@ -44,6 +43,7 @@ stages:
 
 - stage: DeployCodeToWorkspace
   displayName: "Deployment Stage"
+  dependsOn: Approval_Stage_${{parameters.Deployment_Environment}}
   jobs:
     - job: InvokePythonOrchestratorFunction
       timeoutInMinutes: 360
@@ -52,23 +52,15 @@ stages:
         vmImage: "ubuntu-latest"
 
       steps:
-        - task: AzureKeyVault@2
-          displayName: "Azure Key Vault: ${{ variables.KeyVaultName }}"
-          inputs:
-            azureSubscription: ${{ variables.AdfAzureServiceConnection }}
-            KeyVaultName: ${{ variables.KeyVaultName }}
-            SecretsFilter: |
-                      ${{ variables.SpnSecretName }},
-
         # Use a specific Python version
         - task: UsePythonVersion@0
           inputs:
             versionSpec: "3.x"
             addToPath: true
 
-        # Install Python dependencies
+        # Install Python dependencies from a requirements.txt file
         - script: |
-            python -m pip install pandas requests azure-storage-file-datalake azure-identity pyyaml
+            python -m pip install -r requirements.txt
           displayName: "Install Python dependencies"
 
         # Download artifacts from the previous build pipeline
@@ -81,18 +73,18 @@ stages:
             runVersion: 'specific'
             runId: ${{ parameters.Build_Pipeline_Build_Id }}
             artifactName: ${{ variables.ArtifactName }}
-            targetPath: "$(Build.SourcesDirectory)/ELM"
+            targetPath: "$(Pipeline.Workspace)/artifacts"
 
-        
         # Run the Python deployment orchestrator script
         - script: |
-            python Deploy/Common/deployment_main.py
+            python Utilities/deployment_main.py
           displayName: "Invoke orchestrator function"
           env:
-            spn: $(spn) # Provide spn secret anme
+            tenant_id: $(tenant_id)
+            client_id: $(client_id)
+            client_secret: $(client_secret)
             deployment_env: ${{parameters.Deployment_Environment}}
             environment_type: ${{parameters.Environment_Type}}
-            artifact_path: "$(Build.SourcesDirectory)/ELM"
+            artifact_path: "$(Pipeline.Workspace)/artifacts"
             build_number: ${{ parameters.Build_Pipeline_Build_Number }}
-            start_time : $(Build.StartTime)
             connections: $(Connections)
