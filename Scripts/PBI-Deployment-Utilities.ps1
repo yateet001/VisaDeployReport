@@ -3,6 +3,14 @@
   Power BI Deployment Utilities
   Handles deployment of semantic models and reports into Power BI workspaces.
 #>
+param (
+    [Parameter(Mandatory = $true)]
+    [string]$WorkspaceId,   # This will come from MainOrchestrator
+    [Parameter(Mandatory = $true)]
+    [string]$DeployUrl,     # API endpoint for deployment
+    [Parameter(Mandatory = $true)]
+    [string]$PBIPPath       # Local path to PBIP folder
+)
 
 function Get-PBIAccessToken {
     param(

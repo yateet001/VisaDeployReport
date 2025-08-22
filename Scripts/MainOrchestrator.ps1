@@ -17,7 +17,13 @@ param (
     [string]$ReportName,
 
     [Parameter(Mandatory = $true)]
-    [string]$ReportDefinitionPath   # path to report definition JSON
+    [string]$ReportDefinitionPath,  # path to report definition JSON
+    
+    [Parameter(Mandatory = $true)]
+    [string]$Workspace,
+
+    [Parameter(Mandatory = $true)]
+    [string]$ConfigFile
 )
 
 Write-Host "========== Starting Orchestrator ($Environment) ==========" -ForegroundColor Cyan
