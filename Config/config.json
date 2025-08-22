@@ -5,7 +5,6 @@
     "ProdWarehouseConnection": "2kg5tzezshsufoul3i7hmpw6fy-xbfqvs3k4gderoadjxgo3irm2a.datawarehouse.fabric.microsoft.com",
     "DevWarehouseName": "WH_Sales",       
     "ProdWarehouseName": "WH_Prod",        
-    "ReportID": "your-report-id",
     "AppID": "dd3aa383-4d69-4854-8885-9e483ffb5b72",
     "TenantID": "e4d98dd2-9199-42e5-ba8b-da3e763ede2e",
     "ClientID": "dd3aa383-4d69-4854-8885-9e483ffb5b72",
