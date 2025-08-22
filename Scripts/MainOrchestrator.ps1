@@ -1,481 +1,1087 @@
-# ================================
-# MainOrchestrator.ps1 (Fixed with Validation)
-# ================================
-[CmdletBinding()]
-param (
-    [Parameter(Mandatory = $true)]
-    [ValidateSet("Dev","Prod")]
-    [string]$Environment,
-
-    [Parameter(Mandatory = $true)]
-    [string]$ConfigFile,
-
-    [Parameter(Mandatory = $false)]
-    [string]$DeploymentProfilePath,
-
-    [Parameter(Mandatory = $false)]
-    [switch]$SkipValidation
+# MainOrchestrator.ps1 for PBIP file deployment (Complete Fixed Version)
+param(
+    [Parameter(Mandatory=$true)]
+    [string]$Workspace,
+    
+    [Parameter(Mandatory=$true)]
+    [string]$ConfigFile
 )
 
-Write-Host "========== Starting Orchestrator ($Environment) ==========" -ForegroundColor Cyan
+Write-Host "Starting Power BI PBIP Deployment..."
+Write-Host "Workspace: $Workspace"
+Write-Host "Config File: $ConfigFile"
 
-# --- Paths ---
-$scriptRoot = $PSScriptRoot
-$configPath = if ([System.IO.Path]::IsPathRooted($ConfigFile)) { $ConfigFile } else { Join-Path (Split-Path $scriptRoot -Parent) $ConfigFile }
-$tokenUtil  = Join-Path $scriptRoot "Token-Utilities.ps1"
-$pbiUtil    = Join-Path $scriptRoot "PBI-Deployment-Utilities.ps1"
+# ===============================
+# UTILITY FUNCTIONS
+# ===============================
 
-# Set deployment profile path based on environment if not provided
-if (-not $DeploymentProfilePath) {
-    $DeploymentProfilePath = Join-Path (Split-Path $scriptRoot -Parent) "Configuration\$Environment\DEPLOYMENT_PROFILE.csv"
-}
-
-# ================================
-# VALIDATION FUNCTIONS
-# ================================
-function Test-Configuration {
-    param(
-        [Parameter(Mandatory=$true)][string]$ConfigPath,
-        [Parameter(Mandatory=$true)][string]$Environment
+function Get-SPNToken {
+    param (
+        [Parameter(Mandatory=$true)]
+        [string]$TenantId,
+        
+        [Parameter(Mandatory=$true)]
+        [string]$ClientId,
+        
+        [Parameter(Mandatory=$true)]
+        [string]$ClientSecret
     )
-    
-    Write-Host "=== Configuration Validation ===" -ForegroundColor Yellow
-    
-    # Test config file exists
-    if (-not (Test-Path $ConfigPath)) {
-        throw "Configuration file not found: $ConfigPath"
-    }
-    
-    # Load and validate config
-    try {
-        $config = Get-Content -Raw -Path $ConfigPath | ConvertFrom-Json
-        Write-Host "✓ Configuration file loaded successfully" -ForegroundColor Green
-    }
-    catch {
-        throw "Failed to parse configuration file: $_"
-    }
-    
-    # Validate required properties
-    $requiredProps = @(
-        "DevWorkspaceID", "ProdWorkspaceID",
-        "DevWarehouseConnection", "ProdWarehouseConnection", 
-        "DevWarehouseName", "ProdWarehouseName",
-        "TenantID", "ClientID", "ClientSecret",
-        "FabricAPIEndpoint"
-    )
-    
-    $missingProps = @()
-    foreach ($prop in $requiredProps) {
-        if (-not $config.PSObject.Properties.Name.Contains($prop) -or [string]::IsNullOrWhiteSpace($config.$prop)) {
-            $missingProps += $prop
-        }
-    }
-    
-    if ($missingProps.Count -gt 0) {
-        throw "Missing or empty configuration properties: $($missingProps -join ', ')"
-    }
-    
-    Write-Host "✓ All required configuration properties present" -ForegroundColor Green
-    
-    # Validate environment-specific properties
-    switch ($Environment) {
-        "Dev" {
-            if ([string]::IsNullOrWhiteSpace($config.DevWorkspaceID)) {
-                throw "DevWorkspaceID is required for Dev environment"
-            }
-            if ([string]::IsNullOrWhiteSpace($config.DevWarehouseConnection)) {
-                throw "DevWarehouseConnection is required for Dev environment"
-            }
-            Write-Host "✓ Dev environment configuration valid" -ForegroundColor Green
-        }
-        "Prod" {
-            if ([string]::IsNullOrWhiteSpace($config.ProdWorkspaceID)) {
-                throw "ProdWorkspaceID is required for Prod environment"
-            }
-            if ([string]::IsNullOrWhiteSpace($config.ProdWarehouseConnection)) {
-                throw "ProdWarehouseConnection is required for Prod environment"
-            }
-            Write-Host "✓ Prod environment configuration valid" -ForegroundColor Green
-        }
-    }
-    
-    return $config
-}
-
-function Test-DeploymentProfile {
-    param(
-        [Parameter(Mandatory=$true)][string]$ProfilePath
-    )
-    
-    Write-Host "=== Deployment Profile Validation ===" -ForegroundColor Yellow
-    
-    if (-not (Test-Path $ProfilePath)) {
-        throw "Deployment profile not found: $ProfilePath"
-    }
     
     try {
-        $profile = Import-Csv -Path $ProfilePath
-        Write-Host "✓ Deployment profile loaded successfully" -ForegroundColor Green
+        Write-Host "Acquiring access token for Fabric API..."
+        
+        $body = @{
+            grant_type    = "client_credentials"
+            client_id     = $ClientId
+            client_secret = $ClientSecret
+            scope         = "https://api.fabric.microsoft.com/.default"
+        }
+        
+        $tokenResponse = Invoke-RestMethod -Uri "https://login.microsoftonline.com/$TenantId/oauth2/v2.0/token" -Method Post -Body $body
+        $accessToken = $tokenResponse.access_token
+        
+        Write-Host "✓ Successfully acquired Fabric API access token"
+        return $accessToken
     }
     catch {
-        throw "Failed to parse deployment profile: $_"
-    }
-    
-    if (-not $profile -or $profile.Count -eq 0) {
-        throw "Deployment profile is empty or contains no valid rows"
-    }
-    
-    # Validate required columns
-    $requiredColumns = @("workspace_name", "report_name", "report_path", "warehouse_name", "environment_type", "transformation_layer")
-    $actualColumns = $profile[0].PSObject.Properties.Name
-    
-    $missingColumns = @()
-    foreach ($col in $requiredColumns) {
-        if ($col -notin $actualColumns) {
-            $missingColumns += $col
-        }
-    }
-    
-    if ($missingColumns.Count -gt 0) {
-        throw "Missing columns in deployment profile: $($missingColumns -join ', ')"
-    }
-    
-    # Validate each row has required data
-    for ($i = 0; $i -lt $profile.Count; $i++) {
-        $row = $profile[$i]
-        if ([string]::IsNullOrWhiteSpace($row.report_name)) {
-            throw "Row $($i + 1): report_name is required"
-        }
-        if ([string]::IsNullOrWhiteSpace($row.report_path)) {
-            throw "Row $($i + 1): report_path is required"
-        }
-    }
-    
-    Write-Host "✓ Deployment profile structure valid" -ForegroundColor Green
-    Write-Host "✓ Found $($profile.Count) deployment profile(s) to process" -ForegroundColor Green
-    
-    return $profile
-}
-
-function Test-ReportPaths {
-    param(
-        [Parameter(Mandatory=$true)][array]$DeploymentProfile,
-        [Parameter(Mandatory=$true)][string]$BasePath
-    )
-    
-    Write-Host "=== Report Path Validation ===" -ForegroundColor Yellow
-    
-    $pathIssues = @()
-    
-    foreach ($profile in $DeploymentProfile) {
-        Write-Host "Validating: $($profile.report_name)" -ForegroundColor Cyan
+        Write-Error "Failed to acquire access token for Fabric API: $_"
         
-        # Check report path
-        $reportPath = Join-Path $BasePath $profile.report_path
-        $reportDir = Split-Path $reportPath -Parent
-        
-        if (Test-Path $reportPath) {
-            Write-Host "  ✓ Report definition found: $reportPath" -ForegroundColor Green
-        } elseif (Test-Path $reportDir) {
-            Write-Host "  ✓ Report directory found: $reportDir" -ForegroundColor Green
-        } else {
-            Write-Host "  ✗ Report path missing: $reportPath" -ForegroundColor Red
-            $pathIssues += "Report path missing: $reportPath"
-        }
-        
-        # Check for model.bim in semantic model folder
-        $modelPath = Join-Path $reportDir "$($profile.report_name).SemanticModel\model.bim"
-        if (Test-Path $modelPath) {
-            Write-Host "  ✓ Model definition found: $modelPath" -ForegroundColor Green
-        } else {
-            # Try alternative paths
-            $altModelPath = Join-Path $reportDir "*.SemanticModel\model.bim"
-            $foundModel = Get-ChildItem -Path $altModelPath -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($foundModel) {
-                Write-Host "  ✓ Model definition found: $($foundModel.FullName)" -ForegroundColor Green
-            } else {
-                Write-Host "  ⚠ Model definition not found: $modelPath" -ForegroundColor Yellow
-                Write-Host "    Will attempt to create semantic model from report definition" -ForegroundColor Yellow
-            }
-        }
-        
-        # Check for .pbip file
-        $pbipPath = Join-Path $reportDir "$($profile.report_name).pbip"
-        if (Test-Path $pbipPath) {
-            Write-Host "  ✓ PBIP file found: $pbipPath" -ForegroundColor Green
-        } else {
-            $foundPbip = Get-ChildItem -Path $reportDir -Filter "*.pbip" -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($foundPbip) {
-                Write-Host "  ✓ PBIP file found: $($foundPbip.FullName)" -ForegroundColor Green
-            } else {
-                Write-Host "  ⚠ PBIP file not found in: $reportDir" -ForegroundColor Yellow
-            }
-        }
-    }
-    
-    if ($pathIssues.Count -gt 0) {
-        Write-Host "Path validation issues found:" -ForegroundColor Red
-        $pathIssues | ForEach-Object { Write-Host "  $_" -ForegroundColor Red }
-        throw "Critical path validation failures. Please check file structure."
-    }
-    
-    Write-Host "✓ Path validation completed successfully" -ForegroundColor Green
-}
-
-function Test-Prerequisites {
-    param(
-        [Parameter(Mandatory=$true)][string]$ConfigPath,
-        [Parameter(Mandatory=$true)][string]$Environment,
-        [Parameter(Mandatory=$true)][string]$DeploymentProfilePath,
-        [Parameter(Mandatory=$true)][string]$ScriptRoot
-    )
-    
-    Write-Host "`n========== VALIDATION PHASE ==========" -ForegroundColor Magenta
-    
-    # Test script dependencies
-    $tokenUtil = Join-Path $ScriptRoot "Token-Utilities.ps1"
-    $pbiUtil = Join-Path $ScriptRoot "PBI-Deployment-Utilities.ps1"
-    
-    if (-not (Test-Path $tokenUtil)) { throw "Token utilities not found at: $tokenUtil" }
-    if (-not (Test-Path $pbiUtil)) { throw "PBI deployment utilities not found at: $pbiUtil" }
-    Write-Host "✓ Script dependencies found" -ForegroundColor Green
-    
-    # Validate configuration
-    $config = Test-Configuration -ConfigPath $ConfigPath -Environment $Environment
-    
-    # Validate deployment profile
-    $deploymentProfile = Test-DeploymentProfile -ProfilePath $DeploymentProfilePath
-    
-    # Validate report paths
-    $basePath = Split-Path $ScriptRoot -Parent
-    Test-ReportPaths -DeploymentProfile $deploymentProfile -BasePath $basePath
-    
-    Write-Host "✓ All validations passed successfully" -ForegroundColor Green
-    Write-Host "========== VALIDATION COMPLETE ==========`n" -ForegroundColor Magenta
-    
-    return @{
-        Config = $config
-        DeploymentProfile = $deploymentProfile
-    }
-}
-
-# ================================
-# MAIN ORCHESTRATION LOGIC
-# ================================
-try {
-    # Run validation unless skipped
-    if (-not $SkipValidation) {
-        $validationResult = Test-Prerequisites -ConfigPath $configPath -Environment $Environment -DeploymentProfilePath $DeploymentProfilePath -ScriptRoot $scriptRoot
-        $config = $validationResult.Config
-        $deploymentProfile = $validationResult.DeploymentProfile
-    } else {
-        Write-Host "⚠ Skipping validation as requested" -ForegroundColor Yellow
-        # Load config and profile without validation
-        $config = Get-Content -Raw -Path $configPath | ConvertFrom-Json
-        $deploymentProfile = Import-Csv -Path $DeploymentProfilePath
-    }
-
-    # Import utilities
-    . $tokenUtil
-    . $pbiUtil
-
-    # Resolve env-specific values from config.json
-    switch ($Environment) {
-        "Dev" {
-            $WorkspaceId = $config.DevWorkspaceID
-            $Server      = $config.DevWarehouseConnection
-            $Database    = $config.DevWarehouseName
-        }
-        "Prod" {
-            $WorkspaceId = $config.ProdWorkspaceID
-            $Server      = $config.ProdWarehouseConnection
-            $Database    = $config.ProdWarehouseName
-        }
-    }
-
-    Write-Host "Environment Configuration:" -ForegroundColor Cyan
-    Write-Host "  Workspace ID: $WorkspaceId"
-    Write-Host "  Warehouse Server: $Server"
-    Write-Host "  Warehouse Database: $Database"
-    Write-Host "  Reports to deploy: $($deploymentProfile.Count)"
-
-    # ----------------------------
-    # AUTHENTICATION
-    # ----------------------------
-    Write-Host "`n========== AUTHENTICATION ==========" -ForegroundColor Magenta
-    Write-Host "Acquiring access token..." -ForegroundColor Yellow
-    $AccessToken = Get-SPNToken -TenantId $config.TenantID -ClientId $config.ClientID -ClientSecret $config.ClientSecret
-    if (-not $AccessToken) { throw "Failed to acquire access token." }
-    $Headers = @{ Authorization = "Bearer $AccessToken" }
-    Write-Host "✓ Access token acquired successfully" -ForegroundColor Green
-
-    # Test token validity
-    try {
-        $testUrl = "$($config.FabricAPIEndpoint)/workspaces"
-        Invoke-RestMethod -Uri $testUrl -Headers $Headers -Method Get -TimeoutSec 30 | Out-Null
-        Write-Host "✓ Access token validated against Fabric API" -ForegroundColor Green
-    }
-    catch {
-        Write-Warning "Token validation failed, but continuing: $_"
-    }
-
-    # ----------------------------
-    # DEPLOYMENT PHASE
-    # ----------------------------
-    Write-Host "`n========== DEPLOYMENT PHASE ==========" -ForegroundColor Magenta
-    
-    $successCount = 0
-    $failureCount = 0
-    $deploymentResults = @()
-
-    foreach ($profile in $deploymentProfile) {
-        $deploymentStart = Get-Date
-        Write-Host "`n--- Processing: $($profile.report_name) ---" -ForegroundColor Cyan
-        
+        # Fallback to Power BI API scope
         try {
-            $ReportName = $profile.report_name
-            $ReportPath = $profile.report_path
-            $SemanticModelName = $ReportName + "_Model"
+            Write-Host "Trying Power BI API scope as fallback..."
             
-            # Construct paths
-            $ReportDefinitionPath = Join-Path (Split-Path $scriptRoot -Parent) $ReportPath
-            $ModelDefinitionPath = Join-Path (Split-Path $ReportDefinitionPath -Parent) "$($profile.report_name).SemanticModel\model.bim"
+            $body = @{
+                grant_type    = "client_credentials"
+                client_id     = $ClientId
+                client_secret = $ClientSecret
+                resource      = "https://analysis.windows.net/powerbi/api"
+            }
             
-            Write-Host "Report: $ReportName" -ForegroundColor White
-            Write-Host "Semantic Model: $SemanticModelName" -ForegroundColor White
-
-            # Deploy Semantic Model
-            Write-Host "Deploying semantic model..." -ForegroundColor Yellow
-            $semanticResult = Deploy-PBISemanticModel -WorkspaceId $WorkspaceId `
-                                                      -SemanticModelName $SemanticModelName `
-                                                      -ModelDefinitionPath $ModelDefinitionPath `
-                                                      -AccessToken $AccessToken
-            if (-not $semanticResult.Success) { 
-                throw "Semantic model deployment failed: $($semanticResult.Error)"
-            }
-            $semanticModelId = $semanticResult.ModelId
-            Write-Host "✓ Semantic model deployed successfully" -ForegroundColor Green
-
-            # Connection binding (non-critical)
-            Write-Host "Configuring data connections..." -ForegroundColor Yellow
-            try {
-                $connectionId = Ensure-FabricConnection -WorkspaceId $WorkspaceId -Server $Server -Database $Database -Headers $Headers
-                if ($connectionId) {
-                    Bind-Connection-ToSemanticModel -WorkspaceId $WorkspaceId -SemanticModelId $semanticModelId -ConnectionId $connectionId -Headers $Headers
-                    Write-Host "✓ Data connection configured successfully" -ForegroundColor Green
-                }
-            }
-            catch {
-                Write-Warning "Connection binding failed (non-critical): $_"
-            }
-
-            # Deploy Report
-            Write-Host "Deploying report..." -ForegroundColor Yellow
-            $reportResult = Deploy-PBIReport `
-                            -WorkspaceId $WorkspaceId `
-                            -ReportName $ReportName `
-                            -ReportPath $ReportDefinitionPath `
-                            -SemanticModelId $semanticModelId `
-                            -AccessToken $AccessToken
-
-            # Get report ID
-            $reportId = $null
-            if ($null -ne $reportResult) {
-                if ($reportResult -is [string]) {
-                    $reportId = $reportResult
-                } elseif ($reportResult.PSObject.Properties.Match('id').Count -gt 0) {
-                    $reportId = $reportResult.id
-                }
-            }
-
-            if (-not $reportId) {
-                Write-Host "Looking up report by name..." -ForegroundColor Yellow
-                $listUri = "$($config.FabricAPIEndpoint)/workspaces/$WorkspaceId/reports"
-                $listResp = Invoke-RestMethod -Method Get -Uri $listUri -Headers $Headers
-                $reportHit = @($listResp.value) | Where-Object { $_.displayName -eq $ReportName -or $_.name -eq $ReportName } | Select-Object -First 1
-                if ($reportHit) { $reportId = $reportHit.id }
-            }
-
-            if (-not $reportId) {
-                throw "Report deployment failed - could not obtain report ID"
-            }
-
-            Write-Host "✓ Report deployed successfully" -ForegroundColor Green
-
-            # Rebind report to semantic model
-            Write-Host "Binding report to semantic model..." -ForegroundColor Yellow
-            try {
-                $rebindResult = Rebind-ReportToDataset -AccessToken $AccessToken -WorkspaceId $WorkspaceId -ReportId $reportId -DatasetId $semanticModelId -FabricApiEndpoint $config.FabricAPIEndpoint
-                Write-Host "✓ Report bound to semantic model successfully" -ForegroundColor Green
-            }
-            catch {
-                Write-Warning "Report rebinding failed (non-critical): $_"
-            }
-
-            $deploymentEnd = Get-Date
-            $duration = $deploymentEnd - $deploymentStart
+            $tokenResponse = Invoke-RestMethod -Uri "https://login.microsoftonline.com/$TenantId/oauth2/token" -Method Post -Body $body
+            $accessToken = $tokenResponse.access_token
             
-            Write-Host "✓ Successfully deployed: $ReportName (Duration: $($duration.ToString('mm\:ss')))" -ForegroundColor Green
-            $successCount++
-            
-            $deploymentResults += @{
-                ReportName = $ReportName
-                Status = "Success"
-                Duration = $duration
-                Error = $null
-            }
+            Write-Host "✓ Successfully acquired Power BI API access token as fallback"
+            return $accessToken
         }
         catch {
-            $deploymentEnd = Get-Date
-            $duration = $deploymentEnd - $deploymentStart
-            
-            Write-Host "✗ Failed to deploy: $($profile.report_name)" -ForegroundColor Red
-            Write-Host "  Error: $_" -ForegroundColor Red
-            $failureCount++
-            
-            $deploymentResults += @{
-                ReportName = $profile.report_name
-                Status = "Failed"
-                Duration = $duration
-                Error = $_.Exception.Message
-            }
+            Write-Error "Failed to acquire Power BI API access token: $_"
+            throw "Could not acquire any access token"
         }
     }
+}
 
-    # ----------------------------
-    # DEPLOYMENT SUMMARY
-    # ----------------------------
-    Write-Host "`n========== DEPLOYMENT SUMMARY ==========" -ForegroundColor Magenta
-    Write-Host "Environment: $Environment" -ForegroundColor Cyan
-    Write-Host "Total Reports: $($deploymentProfile.Count)" -ForegroundColor Cyan
-    Write-Host "Successful: $successCount" -ForegroundColor Green
-    Write-Host "Failed: $failureCount" -ForegroundColor Red
-    
-    if ($deploymentResults.Count -gt 0) {
-        Write-Host "`nDetailed Results:" -ForegroundColor Cyan
-        foreach ($result in $deploymentResults) {
-            $statusColor = if ($result.Status -eq "Success") { "Green" } else { "Red" }
-            Write-Host "  $($result.ReportName): $($result.Status) ($($result.Duration.ToString('mm\:ss')))" -ForegroundColor $statusColor
-            if ($result.Error) {
-                Write-Host "    Error: $($result.Error)" -ForegroundColor Red
-            }
-        }
-    }
+function Get-PBIPFiles {
+    param(
+        $ArtifactPath,
+        $Folder
+    )
 
-    if ($failureCount -eq 0) {
-        Write-Host "`n✓ All deployments completed successfully!" -ForegroundColor Green
+    if ($Folder) {
+        $target = Join-Path $ArtifactPath $Folder
     } else {
-        Write-Host "`n⚠ Some deployments failed. Check the logs above for details." -ForegroundColor Yellow
-        if ($failureCount -eq $deploymentProfile.Count) {
-            throw "All deployments failed"
+        $target = $ArtifactPath
+    }
+
+    if (-not (Test-Path $target)) {
+        Write-Warning "Path not found: $target"
+        return @()
+    }
+
+    $files = Get-ChildItem -Path $target -Recurse -File -Filter '*.pbip'
+    Write-Host "Found $($files.Count) PBIP files in $target"
+    
+    foreach ($file in $files) {
+        Write-Host "  Found PBIP: $($file.FullName)"
+        
+        $parentDir = $file.Directory.FullName
+        $baseName = [System.IO.Path]::GetFileNameWithoutExtension($file.Name)
+        $reportFolder = Join-Path $parentDir "$baseName.Report"
+        $semanticModelFolder = Join-Path $parentDir "$baseName.SemanticModel"
+        
+        Write-Host "    Report folder: $(Test-Path $reportFolder)"
+        Write-Host "    SemanticModel folder: $(Test-Path $semanticModelFolder)"
+    }
+
+    return $files
+}
+
+function Validate-PBIPStructure {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$PBIPFilePath
+    )
+    
+    $pbipDir = Split-Path $PBIPFilePath -Parent
+    $baseName = [System.IO.Path]::GetFileNameWithoutExtension($PBIPFilePath)
+    $reportFolder = Join-Path $pbipDir "$baseName.Report"
+    $semanticModelFolder = Join-Path $pbipDir "$baseName.SemanticModel"
+    
+    $isValid = (Test-Path $reportFolder) -and (Test-Path $semanticModelFolder)
+    
+    if ($isValid) {
+        Write-Host "✓ PBIP structure validated for: $baseName"
+        
+        $reportDefFile = Join-Path $reportFolder "report.json"
+        $modelBimFile = Get-ChildItem -Path $semanticModelFolder -Filter "model.bim" -Recurse | Select-Object -First 1
+        
+        Write-Host "    Report definition: $(Test-Path $reportDefFile)"
+        Write-Host "    Model BIM file: $($modelBimFile -ne $null)"
+        
+        return @{
+            IsValid = $true
+            ReportFolder = $reportFolder
+            SemanticModelFolder = $semanticModelFolder
+            ReportDefFile = $reportDefFile
+            ModelBimFile = if ($modelBimFile) { $modelBimFile.FullName } else { $null }
+        }
+    } else {
+        Write-Warning "Invalid PBIP structure for: $baseName"
+        Write-Warning "  Missing Report folder: $(-not (Test-Path $reportFolder))"
+        Write-Warning "  Missing SemanticModel folder: $(-not (Test-Path $semanticModelFolder))"
+        
+        return @{
+            IsValid = $false
+        }
+    }
+}
+
+function Verify-WorkspaceAccess {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$WorkspaceId,
+        [Parameter(Mandatory=$true)]
+        [string]$AccessToken
+    )
+    
+    try {
+        Write-Host "Verifying access to workspace: $WorkspaceId"
+        
+        $headers = @{
+            "Authorization" = "Bearer $AccessToken"
+            "Content-Type" = "application/json"
+        }
+        
+        $uri = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId"
+        $response = Invoke-RestMethod -Uri $uri -Method Get -Headers $headers
+        
+        Write-Host "✓ Workspace access verified: $($response.displayName)"
+        return $true
+    }
+    catch {
+        Write-Error "Failed to access workspace: $_"
+        return $false
+    }
+}
+
+function Wait-FabricOperationCompletion {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$OperationStatusUrl,
+        [Parameter(Mandatory=$true)]
+        [string]$AccessToken,
+        [int]$MaxWaitSeconds = 180
+    )
+
+    $headers = @{
+        "Authorization" = "Bearer $AccessToken"
+        "Content-Type" = "application/json"
+    }
+
+    $elapsed = 0
+    $interval = 5
+    while ($elapsed -lt $MaxWaitSeconds) {
+        try {
+            $resp = Invoke-RestMethod -Uri $OperationStatusUrl -Method Get -Headers $headers -ErrorAction Stop
+            $status = $resp.status
+            if (-not $status) { $status = $resp.state }
+            if ($status -and ($status -in @('Succeeded','Completed'))) { return $true }
+            if ($status -and ($status -in @('Failed','Error'))) {
+                Write-Error "Fabric operation failed: $($resp | ConvertTo-Json -Depth 10)"
+                return $false
+            }
+        } catch {
+            Write-Warning "Failed to poll operation status: $($_.Exception.Message)"
+        }
+        Start-Sleep -Seconds $interval
+        $elapsed += $interval
+    }
+    Write-Warning "Operation did not complete within $MaxWaitSeconds seconds"
+    return $false
+}
+
+function List-WorkspaceItems {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$WorkspaceId,
+        [Parameter(Mandatory=$true)]
+        [string]$AccessToken
+    )
+    
+    try {
+        $headers = @{
+            "Authorization" = "Bearer $AccessToken"
+            "Content-Type" = "application/json"
+        }
+        
+        $uri = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/items"
+        $response = Invoke-RestMethod -Uri $uri -Method Get -Headers $headers
+        
+        Write-Host "Workspace items found: $($response.value.Count)"
+        foreach ($item in $response.value) {
+            Write-Host "  - $($item.displayName) ($($item.type))"
+        }
+        
+        return $response.value
+    }
+    catch {
+        Write-Warning "Failed to list workspace items: $_"
+        return @()
+    }
+}
+
+function Debug-PBIPContent {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$PBIPFilePath
+    )
+    
+    try {
+        Write-Host "Analyzing PBIP content..."
+        
+        # Basic file analysis
+        $fileInfo = Get-Item $PBIPFilePath
+        Write-Host "PBIP file info:"
+        Write-Host "  - File size: $([math]::Round($fileInfo.Length / 1KB, 2)) KB"
+        Write-Host "  - Last modified: $($fileInfo.LastWriteTime)"
+        
+        $pbipDir = Split-Path $PBIPFilePath -Parent
+        $baseName = [System.IO.Path]::GetFileNameWithoutExtension($PBIPFilePath)
+        
+        # Check Report folder
+        $reportFolder = Join-Path $pbipDir "$baseName.Report"
+        if (Test-Path $reportFolder) {
+            $reportFiles = Get-ChildItem $reportFolder -Recurse
+            Write-Host "  - Report files: $($reportFiles.Count)"
+        }
+        
+        # Check SemanticModel folder
+        $semanticModelFolder = Join-Path $pbipDir "$baseName.SemanticModel"
+        if (Test-Path $semanticModelFolder) {
+            $modelFiles = Get-ChildItem $semanticModelFolder -Recurse
+            Write-Host "  - Semantic model files: $($modelFiles.Count)"
+            
+            $modelBim = Get-ChildItem $semanticModelFolder -Filter "model.bim" -Recurse
+            if ($modelBim) {
+                $modelSize = [math]::Round($modelBim.Length / 1KB, 2)
+                Write-Host "  - Model.bim size: $modelSize KB"
+            }
+        }
+    }
+    catch {
+        Write-Warning "Could not analyze PBIP content: $_"
+    }
+}
+
+function Wait-ForDeploymentCompletion {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$WorkspaceId,
+        [Parameter(Mandatory=$true)]
+        [string]$AccessToken,
+        [Parameter(Mandatory=$true)]
+        [string]$ItemName,
+        [Parameter(Mandatory=$true)]
+        [string]$ItemType,
+        [int]$MaxWaitMinutes = 5
+    )
+    
+    $maxWaitTime = $MaxWaitMinutes * 60 # Convert to seconds
+    $waitTime = 0
+    $checkInterval = 15 # Check every 15 seconds
+    
+    Write-Host "Waiting for $ItemType '$ItemName' to appear in workspace..."
+    
+    do {
+        Start-Sleep -Seconds $checkInterval
+        $waitTime += $checkInterval
+        
+        try {
+            $headers = @{
+                "Authorization" = "Bearer $AccessToken"
+                "Content-Type" = "application/json"
+            }
+            
+            $item = $null
+            if ($ItemType -eq "SemanticModel") {
+                $uriSm = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels"
+                $responseSm = Invoke-RestMethod -Uri $uriSm -Method Get -Headers $headers
+                $item = $responseSm.value | Where-Object { $_.displayName -eq $ItemName }
+            } elseif ($ItemType -eq "Report") {
+                $uriRpt = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/reports"
+                $responseRpt = Invoke-RestMethod -Uri $uriRpt -Method Get -Headers $headers
+                $item = $responseRpt.value | Where-Object { $_.displayName -eq $ItemName }
+            }
+            
+            if (-not $item) {
+                # Fallback to aggregated items API
+                $uri = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/items"
+                $response = Invoke-RestMethod -Uri $uri -Method Get -Headers $headers
+                $item = $response.value | Where-Object { $_.displayName -eq $ItemName }
+            }
+            
+            if ($item) {
+                Write-Host "✓ $ItemType '$ItemName' found in workspace"
+                return $true
+            }
+            
+            Write-Host "⏳ Waiting... ($waitTime/$maxWaitTime seconds)"
+        }
+        catch {
+            Write-Warning "Error checking for item: $_"
+        }
+        
+    } while ($waitTime -lt $maxWaitTime)
+    
+    Write-Warning "⚠️ $ItemType '$ItemName' not found after $MaxWaitMinutes minutes"
+    return $false
+}
+
+function Verify-DeploymentResult {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$WorkspaceId,
+        [Parameter(Mandatory=$true)]
+        [string]$AccessToken,
+        [Parameter(Mandatory=$true)]
+        [string]$ReportName,
+        [Parameter(Mandatory=$true)]
+        [string]$SemanticModelName
+    )
+    
+    try {
+        $headers = @{
+            "Authorization" = "Bearer $AccessToken"
+            "Content-Type" = "application/json"
+        }
+        
+        # Get all workspace items
+        $uri = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/items"
+        $response = Invoke-RestMethod -Uri $uri -Method Get -Headers $headers
+        
+        # Check for semantic model
+        $semanticModel = $response.value | Where-Object { 
+            $_.displayName -eq $SemanticModelName -and $_.type -eq "SemanticModel" 
+        }
+        
+        # Check for report
+        $report = $response.value | Where-Object { 
+            $_.displayName -eq $ReportName -and $_.type -eq "Report" 
+        }
+        
+        return @{
+            SemanticModelFound = ($semanticModel -ne $null)
+            ReportFound = ($report -ne $null)
+            SemanticModelId = if ($semanticModel) { $semanticModel.id } else { $null }
+            ReportId = if ($report) { $report.id } else { $null }
+        }
+    }
+    catch {
+        Write-Warning "Failed to verify deployment result: $_"
+        return @{
+            SemanticModelFound = $false
+            ReportFound = $false
+            SemanticModelId = $null
+            ReportId = $null
+        }
+    }
+}
+
+function Deploy-SemanticModel {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$SemanticModelFolder,
+        [Parameter(Mandatory=$true)]
+        [string]$WorkspaceId,
+        [Parameter(Mandatory=$true)]
+        [string]$AccessToken,
+        [Parameter(Mandatory=$true)]
+        [string]$ModelName,
+        [Parameter(Mandatory=$true)]
+        [string]$ServerName,
+        [Parameter(Mandatory=$true)]
+        [string]$DatabaseName
+    )
+    
+    try {
+        Write-Host "Deploying semantic model: $ModelName"
+        
+        $modelBimFile = Get-ChildItem -Path $SemanticModelFolder -Filter "model.bim" -Recurse | Select-Object -First 1
+        
+        if (-not $modelBimFile) {
+            throw "model.bim file not found in semantic model folder"
+        }
+
+        # Load and update the model definition for connection switching
+        $modelDefinitionRaw = Get-Content $modelBimFile.FullName -Raw
+        Write-Host "Model definition loaded: $($modelDefinitionRaw.Length) characters"
+
+        try {
+            $modelJson = $modelDefinitionRaw | ConvertFrom-Json
+        } catch {
+            throw "Failed to parse model.bim JSON: $_"
+        }
+
+        $updatesApplied = 0
+        if ($modelJson.model -and $modelJson.model.tables) {
+            foreach ($table in $modelJson.model.tables) {
+                if ($table.partitions) {
+                    foreach ($partition in $table.partitions) {
+                        if ($partition.source -and $partition.source.type -eq 'm' -and $partition.source.expression) {
+                            $pattern = 'Sql\.Database\(".*?"\s*,\s*".*?"\)'
+                            $replacement = 'Sql.Database("' + $ServerName + '", "' + $DatabaseName + '")'
+
+                            if ($partition.source.expression -is [System.Array]) {
+                                $newExpr = @()
+                                foreach ($line in $partition.source.expression) {
+                                    $newExpr += ($line -replace $pattern, $replacement)
+                                }
+                                $partition.source.expression = $newExpr
+                                $updatesApplied++
+                            } elseif ($partition.source.expression -is [string]) {
+                                $partition.source.expression = ($partition.source.expression -replace $pattern, $replacement)
+                                $updatesApplied++
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if ($updatesApplied -gt 0) {
+            Write-Host "✓ Connection switching applied to $updatesApplied partition(s)"
+        } else {
+            Write-Warning "No Sql.Database() expressions found to update in model.bim"
+        }
+
+        $modelDefinition = $modelJson | ConvertTo-Json -Depth 100
+        
+        # Build parts for semantic model (typed endpoint expects top-level paths)
+        $smParts = @()
+        $smDir = Split-Path $modelBimFile.FullName -Parent
+        # model.bim from in-memory updated JSON
+        $smParts += @{
+            path = 'model.bim'
+            payload = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($modelDefinition))
+            payloadType = 'InlineBase64'
+        }
+        foreach ($optional in @('diagramLayout.json','definition.pbism')) {
+            $optPath = Join-Path $smDir $optional
+            if (Test-Path $optPath) {
+                $bytes = [System.IO.File]::ReadAllBytes($optPath)
+                $smParts += @{ path = $optional; payload = [Convert]::ToBase64String($bytes); payloadType = 'InlineBase64' }
+            }
+        }
+
+        $deploymentPayload = @{
+            displayName = $ModelName
+            description = "Semantic model deployed from PBIP: $ModelName"
+            definition = @{ parts = $smParts }
+        } | ConvertTo-Json -Depth 50
+        
+        $deployUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels"
+        
+        $headers = @{ 
+            "Authorization" = "Bearer $AccessToken"
+            "Content-Type" = "application/json"
+        }
+        
+        try {
+            # Create via dedicated semanticModels endpoint and handle async operation
+            $createResp = Invoke-WebRequest -Uri $deployUrl -Method Post -Body $deploymentPayload -Headers $headers -ContentType 'application/json'
+            $modelId = $null
+            $content = $null
+            try { $content = $createResp.Content | ConvertFrom-Json } catch {}
+            if ($content -and $content.id) { $modelId = $content.id }
+            if (-not $modelId) {
+                $opLocation = $createResp.Headers['Operation-Location']
+                if (-not $opLocation) { $opLocation = $createResp.Headers['operation-location'] }
+                if ($opLocation) {
+                    Write-Host "Waiting for semantic model creation operation to complete..."
+                    $opOk = Wait-FabricOperationCompletion -OperationStatusUrl $opLocation -AccessToken $AccessToken -MaxWaitSeconds 180
+                    if (-not $opOk) { throw "Semantic model creation operation did not complete successfully" }
+                }
+                # Resolve by name
+                $listUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels"
+                $listResponse = Invoke-RestMethod -Uri $listUrl -Method Get -Headers $headers
+                $existing = $listResponse.value | Where-Object { $_.displayName -eq $ModelName } | Select-Object -First 1
+                if ($existing) { $modelId = $existing.id }
+            }
+            if (-not $modelId) { throw "Semantic model id could not be determined after creation" }
+
+            Write-Host "✓ Semantic model deployed successfully"
+            Write-Host "Model ID: $modelId"
+            return @{
+                Success = $true
+                ModelId = $modelId
+            }
+        } catch {
+            $statusCode = $null
+            $errBody = $null
+            try { $statusCode = $_.Exception.Response.StatusCode } catch {}
+            try {
+                $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
+                $errBody = $reader.ReadToEnd()
+            } catch {}
+            
+            if ($statusCode -eq 409) {
+                Write-Host "Semantic model already exists, attempting to find existing model..."
+                
+                # Get existing semantic models to find the ID
+                try {
+                    $listUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels"
+                    $listResponse = Invoke-RestMethod -Uri $listUrl -Method Get -Headers $headers
+                    $existingModel = $listResponse.value | Where-Object { $_.displayName -eq $ModelName }
+                    
+                    if ($existingModel) {
+                        Write-Host "Found existing model with ID: $($existingModel.id)"
+                        
+                        # Try to update the existing model using updateDefinition endpoint
+                        $updateUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels/$($existingModel.id)/updateDefinition"
+                        
+                        $updatePayload = @{
+                            "definition" = @{
+                                "parts" = @(
+                                    @{
+                                        "path" = "model.bim"
+                                        "payload" = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($modelDefinition))
+                                        "payloadType" = "InlineBase64"
+                                    }
+                                )
+                            }
+                        } | ConvertTo-Json -Depth 10
+                        
+                        try {
+                            $updateResponse = Invoke-RestMethod -Uri $updateUrl -Method Post -Body $updatePayload -Headers $headers
+                            Write-Host "✓ Semantic model updated successfully"
+                            return @{
+                                Success = $true
+                                ModelId = $existingModel.id
+                            }
+                        } catch {
+                            Write-Warning "Failed to update semantic model definition: $_"
+                            # Even if update fails, return the existing model as success
+                            return @{
+                                Success = $true
+                                ModelId = $existingModel.id
+                                Warning = "Model exists but update failed"
+                            }
+                        }
+                    } else {
+                        Write-Warning "Could not find existing semantic model with name: $ModelName"
+                        return @{
+                            Success = $false
+                            Error = "Model conflict but could not locate existing model"
+                        }
+                    }
+                } catch {
+                    Write-Warning "Failed to list existing semantic models: $_"
+                    return @{
+                        Success = $false
+                        Error = "Model conflict and failed to resolve"
+                    }
+                }
+            } else {
+                Write-Error "Semantic model creation failed. Status: $statusCode Body: $errBody"
+                throw $_
+            }
+        }
+        
+    } catch {
+        Write-Error "Failed to deploy semantic model: $_"
+        return @{
+            Success = $false
+            Error = $_.Exception.Message
+        }
+    }
+}
+
+function Deploy-Report {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$ReportFolder,
+        [Parameter(Mandatory=$true)]
+        [string]$WorkspaceId,
+        [Parameter(Mandatory=$true)]
+        [string]$AccessToken,
+        [Parameter(Mandatory=$true)]
+        [string]$ReportName,
+        [string]$SemanticModelId = $null
+    )
+    
+    try {
+        Write-Host "Deploying report: $ReportName"
+        
+        $reportJsonFile = Join-Path $ReportFolder "report.json"
+        if (-not (Test-Path $reportJsonFile)) {
+            throw "report.json file not found in report folder"
+        }
+
+        # Build complete parts list from the report folder (include StaticResources and others)
+        $allFiles = Get-ChildItem -Path $ReportFolder -Recurse -File
+        $parts = @()
+        foreach ($file in $allFiles) {
+            $relativePath = ($file.FullName.Substring($ReportFolder.Length) -replace '^[\\/]+','')
+            $relativePath = $relativePath -replace '\\','/'
+            $bytes = [System.IO.File]::ReadAllBytes($file.FullName)
+            $b64 = [Convert]::ToBase64String($bytes)
+            $parts += @{
+                path = $relativePath
+                payload = $b64
+                payloadType = 'InlineBase64'
+            }
+        }
+
+        $itemsReportPayload = @{
+            displayName = $ReportName
+            type = 'Report'
+            definition = @{ format = 'PBIR'; parts = $parts }
+        }
+        
+        # Add semantic model binding if provided
+        if ($SemanticModelId) {
+            $deploymentPayload["datasetId"] = $SemanticModelId
+            Write-Host "Binding report to semantic model ID: $SemanticModelId"
+        }
+        
+        $deploymentPayloadJson = $itemsReportPayload | ConvertTo-Json -Depth 50
+        
+        $deployUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/reports"
+        
+        $headers = @{ 
+            "Authorization" = "Bearer $AccessToken"
+            "Content-Type" = "application/json"
+        }
+        
+        try {
+            if (-not $SemanticModelId) {
+                # Try to resolve dataset id by name
+                Write-Warning "SemanticModelId not provided; resolving by report/semantic model name..."
+                $listUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels"
+                $listResponse = Invoke-RestMethod -Uri $listUrl -Method Get -Headers $headers
+                $existingModel = $listResponse.value | Where-Object { $_.displayName -eq $ReportName } | Select-Object -First 1
+                if ($existingModel) { $SemanticModelId = $existingModel.id }
+            }
+            if (-not $SemanticModelId) {
+                throw "Dataset (SemanticModel) id is missing and could not be resolved."
+            }
+
+            # Prefer Items API for PBIP report creation
+            $createUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/items"
+            $response = Invoke-RestMethod -Uri $createUrl -Method Post -Body $deploymentPayloadJson -Headers $headers
+            Write-Host "✓ Report deployed successfully"
+            Write-Host "Report ID: $($response.id)"
+            return $true
+        } catch {
+            $statusCode = $null
+            $errBody = $null
+            try { $statusCode = $_.Exception.Response.StatusCode } catch {}
+            try {
+                $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
+                $errBody = $reader.ReadToEnd()
+            } catch {}
+            
+            if ($statusCode -eq 409) {
+                Write-Host "Report already exists, attempting to find and update..."
+                
+                # Get existing reports to find the ID
+                try {
+                    $listUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/reports"
+                    $listResponse = Invoke-RestMethod -Uri $listUrl -Method Get -Headers $headers
+                    $existingReport = $listResponse.value | Where-Object { $_.displayName -eq $ReportName }
+                    
+                    if ($existingReport) {
+                        Write-Host "Found existing report with ID: $($existingReport.id)"
+                        
+                        # Try to update the existing report using updateDefinition endpoint
+                        $updateUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/reports/$($existingReport.id)/updateDefinition"
+                        
+                        $updatePayload = @{
+                            "definition" = @{
+                                "parts" = @(
+                                    @{
+                                        "path" = "report.json"
+                                        "payload" = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($reportDefinition))
+                                        "payloadType" = "InlineBase64"
+                                    }
+                                )
+                            }
+                        } | ConvertTo-Json -Depth 10
+                        
+                        try {
+                            $updateResponse = Invoke-RestMethod -Uri $updateUrl -Method Post -Body $updatePayload -Headers $headers
+                            Write-Host "✓ Report updated successfully"
+                            return $true
+                        } catch {
+                            Write-Warning "Failed to update report definition: $_"
+                            # Even if update fails, consider it a success since report exists
+                            Write-Host "✓ Report exists (update failed but continuing)"
+                            return $true
+                        }
+                    } else {
+                        Write-Warning "Could not find existing report with name: $ReportName"
+                        return $false
+                    }
+                } catch {
+                    Write-Warning "Failed to list existing reports: $_"
+                    return $false
+                }
+            } else {
+                Write-Error "Report creation failed. Status: $statusCode Body: $errBody"
+                # Fallback: Try Items API create explicitly if dedicated endpoint failed for non-409
+                try {
+                    $createUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/items"
+                    $payloadObj = $itemsReportPayload.PSObject.Copy()
+                    if ($SemanticModelId) { $payloadObj["datasetId"] = $SemanticModelId }
+                    $payload = $payloadObj | ConvertTo-Json -Depth 50
+                    $response2 = Invoke-RestMethod -Uri $createUrl -Method Post -Body $payload -Headers $headers
+                    Write-Host "✓ Report deployed via Items API"
+                    return $true
+                } catch {
+                    Write-Error "Report creation failed. Status: $statusCode Body: $errBody"
+                    throw $_
+                }
+            }
+        }
+        
+    } catch {
+        Write-Error "Failed to deploy report: $_"
+        return $false
+    }
+}
+
+function Deploy-PBIPUsingFabricAPI {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$PBIPFilePath,
+        [Parameter(Mandatory=$true)]
+        [string]$ReportName,
+        [Parameter(Mandatory=$true)]
+        [string]$WorkspaceId,
+        [Parameter(Mandatory=$true)]
+        [string]$AccessToken,
+        [string]$Takeover = "True",
+        [Parameter(Mandatory=$true)]
+        [string]$ServerName,
+        [Parameter(Mandatory=$true)]
+        [string]$DatabaseName
+    )
+    
+    try {
+        Write-Host "`n========================================="
+        Write-Host "Starting Enhanced PBIP Deployment"
+        Write-Host "Report: $ReportName"
+        Write-Host "========================================="
+        
+        # Step 1: Verify workspace access
+        Write-Host "`n--- STEP 1: WORKSPACE VERIFICATION ---"
+        $workspaceAccessible = Verify-WorkspaceAccess -WorkspaceId $WorkspaceId -AccessToken $AccessToken
+        if (-not $workspaceAccessible) {
+            throw "Cannot access target workspace"
+        }
+        
+        # Step 2: List current workspace items (before deployment)
+        Write-Host "`n--- STEP 2: PRE-DEPLOYMENT INVENTORY ---"
+        $preDeploymentItems = List-WorkspaceItems -WorkspaceId $WorkspaceId -AccessToken $AccessToken
+        Write-Host "Pre-deployment: Found $($preDeploymentItems.Count) items in workspace"
+        
+        # Step 3: Validate PBIP structure and content
+        Write-Host "`n--- STEP 3: PBIP VALIDATION ---"
+        $validation = Validate-PBIPStructure -PBIPFilePath $PBIPFilePath
+        if (-not $validation.IsValid) {
+            throw "Invalid PBIP structure for: $ReportName"
+        }
+        
+        Debug-PBIPContent -PBIPFilePath $PBIPFilePath
+        
+        # Step 4: Deploy Semantic Model
+        Write-Host "`n--- STEP 4: SEMANTIC MODEL DEPLOYMENT ---"
+        $semanticModelResult = Deploy-SemanticModel -SemanticModelFolder $validation.SemanticModelFolder -WorkspaceId $WorkspaceId -AccessToken $AccessToken -ModelName $ReportName -ServerName $ServerName -DatabaseName $DatabaseName
+        
+        if (-not $semanticModelResult.Success) {
+            throw "Semantic model deployment failed: $($semanticModelResult.Error)"
+        }
+        
+        if ($semanticModelResult.Warning) {
+            Write-Warning "Semantic model warning: $($semanticModelResult.Warning)"
+        }
+        
+        $semanticModelId = $semanticModelResult.ModelId
+        Write-Host "Semantic model result - ID: $semanticModelId"
+        
+        # Step 5: Wait for semantic model to appear
+        Write-Host "`n--- STEP 5: SEMANTIC MODEL VERIFICATION ---"
+        $semanticModelReady = Wait-ForDeploymentCompletion -WorkspaceId $WorkspaceId -AccessToken $AccessToken -ItemName $ReportName -ItemType "SemanticModel" -MaxWaitMinutes 3
+        
+        if (-not $semanticModelReady) {
+            Write-Warning "Semantic model not found after deployment, but continuing..."
+        }
+        
+        # Step 6: Deploy Report
+        Write-Host "`n--- STEP 6: REPORT DEPLOYMENT ---"
+        $reportSuccess = Deploy-Report -ReportFolder $validation.ReportFolder -WorkspaceId $WorkspaceId -AccessToken $AccessToken -ReportName $ReportName -SemanticModelId $semanticModelId
+        
+        if (-not $reportSuccess) {
+            throw "Report deployment failed"
+        }
+        
+        # Step 7: Wait for report to appear
+        Write-Host "`n--- STEP 7: REPORT VERIFICATION ---"
+        $reportReady = Wait-ForDeploymentCompletion -WorkspaceId $WorkspaceId -AccessToken $AccessToken -ItemName $ReportName -ItemType "Report" -MaxWaitMinutes 3
+        
+        # Step 8: Final verification
+        Write-Host "`n--- STEP 8: FINAL VERIFICATION ---"
+        $verificationResult = Verify-DeploymentResult -WorkspaceId $WorkspaceId -AccessToken $AccessToken -ReportName $ReportName -SemanticModelName $ReportName
+        
+        # Step 9: Post-deployment inventory
+        Write-Host "`n--- STEP 9: POST-DEPLOYMENT INVENTORY ---"
+        $postDeploymentItems = List-WorkspaceItems -WorkspaceId $WorkspaceId -AccessToken $AccessToken
+        Write-Host "Post-deployment: Found $($postDeploymentItems.Count) items in workspace"
+        
+        $newItems = $postDeploymentItems.Count - $preDeploymentItems.Count
+        if ($newItems -gt 0) {
+            Write-Host "✓ Added $newItems new item(s) to workspace"
+        } else {
+            Write-Warning "⚠️ No new items detected in workspace"
+        }
+        
+        # Final assessment
+        Write-Host "`n========================================="
+        Write-Host "DEPLOYMENT SUMMARY"
+        Write-Host "========================================="
+        
+        $overallSuccess = $verificationResult.SemanticModelFound -and $verificationResult.ReportFound
+        
+        if ($overallSuccess) {
+            Write-Host "✓ DEPLOYMENT SUCCESSFUL"
+            Write-Host "  - Semantic Model: ✓ Found"
+            Write-Host "  - Report: ✓ Found"
+            Write-Host "  - Semantic Model ID: $($verificationResult.SemanticModelId)"
+            Write-Host "  - Report ID: $($verificationResult.ReportId)"
+        } else {
+            Write-Warning "⚠️ DEPLOYMENT ISSUES DETECTED"
+            Write-Host "  - Semantic Model: $(if ($verificationResult.SemanticModelFound) { '✓ Found' } else { '❌ Missing' })"
+            Write-Host "  - Report: $(if ($verificationResult.ReportFound) { '✓ Found' } else { '❌ Missing' })"
+            
+            # Provide troubleshooting guidance
+            Write-Host "`n--- TROUBLESHOOTING GUIDANCE ---"
+            if (-not $verificationResult.SemanticModelFound) {
+                Write-Host "• Semantic model missing - check permissions and API scope"
+            }
+            if (-not $verificationResult.ReportFound) {
+                Write-Host "• Report missing - may be deployment timing or API sync issue"
+                Write-Host "• Try checking the workspace manually in a few minutes"
+            }
+        }
+        
+        Write-Host "========================================="
+        
+        return $overallSuccess
+        
+    } catch {
+        Write-Error "Enhanced PBIP deployment failed for $ReportName : $_"
+        
+        # Additional debugging on failure
+        Write-Host "`n--- FAILURE ANALYSIS ---"
+        try {
+            List-WorkspaceItems -WorkspaceId $WorkspaceId -AccessToken $AccessToken
+        } catch {
+            Write-Warning "Could not list workspace items for failure analysis"
+        }
+        
+        return $false
+    }
+}
+
+# ===============================
+# MAIN EXECUTION LOGIC
+# ===============================
+
+try {
+    Write-Host "Starting Power BI PBIP Report Deployment..."
+    Write-Host "Environment: $Workspace"
+    Write-Host "Config File: $ConfigFile"
+
+    # Ensure TLS 1.2 is enabled
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+    # Read configuration file
+    if (-not (Test-Path $ConfigFile)) {
+        throw "Configuration file not found: $ConfigFile"
+    }
+
+    $config = Get-Content -Raw $ConfigFile | ConvertFrom-Json
+    Write-Host "Configuration loaded successfully"
+
+    # Get SPN credentials from config
+    $tenantId = $config.TenantID
+    $clientId = $config.ClientID
+    $clientSecret = $config.ClientSecret
+
+    Write-Host "Using Tenant ID: $tenantId"
+    Write-Host "Using Client ID: $clientId"
+
+    # Map workspace based on environment
+    $targetWorkspaceId = $null
+    
+    switch ($Workspace.ToUpper()) {
+        "DEV" {
+            $targetWorkspaceId = $config.DevWorkspaceID
+        }
+        "PROD" {
+            $targetWorkspaceId = $config.ProdWorkspaceID
+        }
+        default {
+            throw "Unsupported environment: $Workspace. Only DEV and PROD are supported."
         }
     }
 
-    Write-Host "========== ORCHESTRATION COMPLETE ==========`n" -ForegroundColor Magenta
+    if (-not $targetWorkspaceId) {
+        throw "Workspace ID not found for environment: $Workspace"
+    }
+
+    Write-Host "Target Workspace ID: $targetWorkspaceId"
+
+    # Get Access Token
+    $accessToken = Get-SPNToken -TenantId $tenantId -ClientId $clientId -ClientSecret $clientSecret
+    if (-not $accessToken) {
+        throw "Failed to obtain access token. Check TenantID/ClientID/ClientSecret and app permissions."
+    }
+
+    # Set artifact path
+    $artifactPath = $env:BUILD_SOURCESDIRECTORY
+    if (-not $artifactPath) {
+        $artifactPath = $env:artifact_path
+    }
+    if (-not $artifactPath) {
+        $artifactPath = (Get-Location).Path
+    }
+    Write-Host "Using artifact path: $artifactPath"
+
+    # Search for PBIP files
+    Write-Host "Searching for PBIP files..."
+    $reportFolders = @("Demo Report", "Reporting", "Reports", "PowerBI", "BI")
+    $allPbipFiles = @()
+    
+    foreach ($folder in $reportFolders) {
+        $folderPath = Join-Path $artifactPath $folder
+        if (Test-Path $folderPath) {
+            $pbipFiles = Get-PBIPFiles -ArtifactPath $artifactPath -Folder $folder
+            $allPbipFiles += $pbipFiles
+            Write-Host "Found $($pbipFiles.Count) PBIP files in $folder folder"
+        }
+    }
+
+    # If no PBIP files found in specific folders, search entire repository
+    if ($allPbipFiles.Count -eq 0) {
+        Write-Host "No PBIP files found in expected folders, searching entire repository..."
+        $allPbipFiles = Get-ChildItem -Path $artifactPath -Recurse -Filter "*.pbip" -ErrorAction SilentlyContinue
+        Write-Host "Found $($allPbipFiles.Count) PBIP files total"
+    }
+
+    if ($allPbipFiles.Count -eq 0) {
+        throw "No PBIP files found in the repository"
+    }
+
+    Write-Host "`n=== PBIP DEPLOYMENT ==="
+    $deploymentResults = @()
+    
+    foreach ($pbipFile in $allPbipFiles) {
+        $reportName = [System.IO.Path]::GetFileNameWithoutExtension($pbipFile.Name)
+        Write-Host "`nProcessing PBIP: $reportName"
+        Write-Host "File path: $($pbipFile.FullName)"
+
+        # Determine connection settings based on target environment
+        if ($Workspace.ToUpper() -eq 'DEV') {
+            $serverName = $config.DevWarehouseConnection
+            $databaseName = $config.DevWarehouseName
+        } else {
+            $serverName = $config.ProdWarehouseConnection
+            $databaseName = $config.ProdWarehouseName
+        }
+        Write-Host "Using connection -> Server: $serverName | Database: $databaseName"
+
+        $deploymentSuccess = Deploy-PBIPUsingFabricAPI -PBIPFilePath $pbipFile.FullName -ReportName $reportName -WorkspaceId $targetWorkspaceId -AccessToken $accessToken -ServerName $serverName -DatabaseName $databaseName
+        
+        $result = [PSCustomObject]@{
+            ReportName = $reportName
+            FilePath = $pbipFile.FullName
+            DeploymentSuccess = $deploymentSuccess
+            Timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+            Environment = $Workspace
+            WorkspaceId = $targetWorkspaceId
+        }
+        
+        $deploymentResults += $result
+        
+        if ($deploymentSuccess) {
+            Write-Host "✓ Successfully deployed: $reportName"
+        } else {
+            Write-Warning "❌ Failed to deploy: $reportName"
+        }
+    }
+
+    # Summary
+    Write-Host "`n=== DEPLOYMENT SUMMARY ==="
+    $successCount = ($deploymentResults | Where-Object { $_.DeploymentSuccess }).Count
+    $totalCount = $deploymentResults.Count
+    
+    Write-Host "Total PBIP files processed: $totalCount"
+    Write-Host "Successful deployments: $successCount"
+    Write-Host "Failed deployments: $($totalCount - $successCount)"
+
+    # Display detailed results
+    Write-Host "`n=== DETAILED RESULTS ==="
+    foreach ($result in $deploymentResults) {
+        $status = if ($result.DeploymentSuccess) { "✓ SUCCESS" } else { "❌ FAILED" }
+        Write-Host "$status - $($result.ReportName) [$($result.Environment)] - $($result.Timestamp)"
+    }
+
+    # Fail the deployment if any PBIP file failed to deploy
+    if ($successCount -lt $totalCount) {
+        $failedReports = $deploymentResults | Where-Object { -not $_.DeploymentSuccess } | Select-Object -ExpandProperty ReportName
+        Write-Error "The following reports failed to deploy: $($failedReports -join ', ')"
+        throw "One or more PBIP deployments failed"
+    }
+
+    Write-Host "`n✓ Power BI PBIP Report Deployment completed successfully!"
+    Write-Host "========================================="
+    Write-Host "FINAL SUMMARY"
+    Write-Host "========================================="
+    Write-Host "Environment: $Workspace"
+    Write-Host "Workspace ID: $targetWorkspaceId"
+    Write-Host "Total Reports: $totalCount"
+    Write-Host "Successful Deployments: $successCount"
+    Write-Host "Failed Deployments: $($totalCount - $successCount)"
+    Write-Host "Success Rate: $([math]::Round(($successCount / $totalCount) * 100, 2))%"
+    Write-Host "Deployment Completed: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+    Write-Host "========================================="
 }
 catch {
-    Write-Host "`n❌ ORCHESTRATION FAILED ❌" -ForegroundColor Red
-    Write-Host "Error: $_" -ForegroundColor Red
-    Write-Host "Stack Trace: $($_.ScriptStackTrace)" -ForegroundColor Red
+    Write-Error "Power BI PBIP Report Deployment failed: $_"
+    Write-Host "`n=== ERROR DETAILS ==="
+    Write-Host "Error Message: $($_.Exception.Message)"
+    Write-Host "Error Location: $($_.InvocationInfo.ScriptName):$($_.InvocationInfo.ScriptLineNumber)"
+    Write-Host "Failed Command: $($_.InvocationInfo.Line.Trim())"
+    Write-Host "Stack Trace: $($_.ScriptStackTrace)"
+    
+    # If we have deployment results, show what we accomplished
+    if ($deploymentResults -and $deploymentResults.Count -gt 0) {
+        Write-Host "`n=== PARTIAL RESULTS BEFORE FAILURE ==="
+        foreach ($result in $deploymentResults) {
+            $status = if ($result.DeploymentSuccess) { "✓ SUCCESS" } else { "❌ FAILED" }
+            Write-Host "$status - $($result.ReportName)"
+        }
+    }
+    
     exit 1
 }

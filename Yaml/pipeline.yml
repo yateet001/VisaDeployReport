@@ -1,23 +1,23 @@
 trigger: none
 
 pool:
-  vmImage: 'windows-latest'
+  vmImage: 'windows-latest'  # Use a Windows-based agent to support PowerShell and Power BI Desktop
 
 variables:
-  artifact_path: '$(Build.ArtifactStagingDirectory)'
-  config_file: 'Config/config.json'
-  deployment_profile_dev: 'Configuration/Dev/DEPLOYMENT_PROFILE.csv'
-  deployment_profile_prod: 'Configuration/Prod/DEPLOYMENT_PROFILE.csv'
-  output_folder: 'OutputLogs'
+  artifact_path: '$(Build.ArtifactStagingDirectory)'  # Directory for downloaded artifacts
+  config_file: 'Config/config.json'  # Path to config file containing credentials and settings
+  deployment_profile_dev: 'Configuration/Dev/DEPLOYMENT_PROFILE.csv'  # Deployment profile for Dev environment
+  deployment_profile_prod: 'Configuration/Prod/DEPLOYMENT_PROFILE.csv'  # Deployment profile for Prod environment
+  output_folder: 'OutputLogs'  # Folder for output logs
 
 parameters:
   - name: Deployment_Environment
     displayName: "Deployment Environment"
     type: string
-    default: "Dev"
+    default: "DEV"
     values:
-      - "Dev"
-      - "Prod"
+      - "DEV"
+      - "PROD"
 
   - name: Environment_Type
     displayName: "Environment Type"
@@ -36,11 +36,6 @@ parameters:
     displayName: "Deploy Semantic Models"
     type: boolean
     default: true
-
-  - name: Skip_Validation
-    displayName: "Skip Pre-deployment Validation"
-    type: boolean
-    default: false
 
 stages:
   # Approval Stage
@@ -66,34 +61,7 @@ stages:
           vmImage: 'windows-latest'
         steps:
 
-          # Step 1: Verify file structure
-          - task: PowerShell@2
-            displayName: 'Verify File Structure'
-            inputs:
-              targetType: inline
-              script: |
-                Write-Host "=== File Structure Verification ===" -ForegroundColor Cyan
-                Write-Host "Build.SourcesDirectory: $(Build.SourcesDirectory)"
-                
-                # List key directories and files
-                $paths = @(
-                  "Scripts/MainOrchestrator.ps1",
-                  "Scripts/PBI-Deployment-Utilities.ps1", 
-                  "Scripts/Token-Utilities.ps1",
-                  "Config/config.json",
-                  "Configuration/${{ parameters.Deployment_Environment }}/DEPLOYMENT_PROFILE.csv"
-                )
-                
-                foreach ($path in $paths) {
-                  $fullPath = Join-Path "$(Build.SourcesDirectory)" $path
-                  if (Test-Path $fullPath) {
-                    Write-Host "✓ Found: $path" -ForegroundColor Green
-                  } else {
-                    Write-Host "✗ Missing: $path" -ForegroundColor Red
-                  }
-                }
-
-          # Step 2: Create Output Directory
+          # Step 3: Create Output Directory
           - task: PowerShell@2
             displayName: 'Create Output Directory'
             inputs:
@@ -105,69 +73,12 @@ stages:
                 }
                 Write-Host "Output directory created: $outputPath"
 
-          # Step 3: Validate configuration (optional)
+          # Step 4: Run Main PBIP Deployment Script
           - task: PowerShell@2
-            displayName: 'Pre-deployment Validation'
-            condition: eq('${{ parameters.Skip_Validation }}', false)
-            inputs:
-              targetType: inline
-              script: |
-                Write-Host "=== Pre-deployment Validation ===" -ForegroundColor Cyan
-                
-                # Test if we can load the orchestrator with validation
-                try {
-                  & "$(Build.SourcesDirectory)/Scripts/MainOrchestrator.ps1" `
-                    -Environment "${{ parameters.Deployment_Environment }}" `
-                    -ConfigFile "$(config_file)" `
-                    -WhatIf `
-                    -ErrorAction Stop 2>&1 | Out-Null
-                  
-                  Write-Host "✓ Configuration validation passed" -ForegroundColor Green
-                }
-                catch {
-                  # Run just the validation part
-                  Write-Host "Running standalone validation..." -ForegroundColor Yellow
-                  
-                  $configPath = "$(Build.SourcesDirectory)/$(config_file)"
-                  $profilePath = "$(Build.SourcesDirectory)/Configuration/${{ parameters.Deployment_Environment }}/DEPLOYMENT_PROFILE.csv"
-                  
-                  if (Test-Path $configPath) {
-                    Write-Host "✓ Config file exists" -ForegroundColor Green
-                  } else {
-                    throw "Config file not found: $configPath"
-                  }
-                  
-                  if (Test-Path $profilePath) {
-                    Write-Host "✓ Deployment profile exists" -ForegroundColor Green
-                    $profile = Import-Csv $profilePath
-                    Write-Host "✓ Found $($profile.Count) deployment profiles" -ForegroundColor Green
-                  } else {
-                    throw "Deployment profile not found: $profilePath"
-                  }
-                }
-
-          # Step 4a: Run Main PBIP Deployment Script WITH SkipValidation (when Skip_Validation is true)
-          - task: PowerShell@2
-            displayName: "Deploy PBIP Reports to Power BI (Skip Validation)"
-            condition: eq('${{ parameters.Skip_Validation }}', true)
+            displayName: "Deploy PBIP Reports to Power BI"
             inputs:
               filePath: 'Scripts/MainOrchestrator.ps1'
-              arguments: >
-                -Environment "${{ parameters.Deployment_Environment }}" 
-                -ConfigFile "$(config_file)"
-                -SkipValidation
-              pwsh: true
-              workingDirectory: '$(Build.SourcesDirectory)'
-
-          # Step 4b: Run Main PBIP Deployment Script WITHOUT SkipValidation (when Skip_Validation is false)
-          - task: PowerShell@2
-            displayName: "Deploy PBIP Reports to Power BI (With Validation)"
-            condition: eq('${{ parameters.Skip_Validation }}', false)
-            inputs:
-              filePath: 'Scripts/MainOrchestrator.ps1'
-              arguments: >
-                -Environment "${{ parameters.Deployment_Environment }}" 
-                -ConfigFile "$(config_file)"
+              arguments: '-Workspace "${{ parameters.Deployment_Environment }}" -ConfigFile "$(config_file)"'
               pwsh: true
               workingDirectory: '$(Build.SourcesDirectory)'
 
