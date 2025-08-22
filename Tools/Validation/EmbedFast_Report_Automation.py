@@ -11,6 +11,11 @@ import pandas as pd
 import numpy as np
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
+# Power BI auth + API (NEW)
+import requests
+from dotenv import load_dotenv
+from azure.identity import ClientSecretCredential
+
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -59,6 +64,193 @@ def _sanitize_filename(s: str) -> str:
 def _norm(s: str) -> str:
     """Normalize for matching (case-insensitive, collapse whitespace)."""
     return re.sub(r"\s+", " ", (s or "").strip()).lower()
+
+# -------------------- POWER BI AUTH + API (NEW) -------------------- #
+BASE_PBI = "https://api.powerbi.com/v1.0/myorg"
+
+def _pbi_get_headers() -> Dict[str, str]:
+    """
+    Builds an access token for the Power BI REST API using a service principal
+    (TENANT_ID, CLIENT_ID, CLIENT_SECRET must be set in env or .env).
+    """
+    load_dotenv()
+
+    tenant = os.getenv("TENANT_ID") or ""
+    client = os.getenv("CLIENT_ID") or ""
+    secret = os.getenv("CLIENT_SECRET") or ""
+    if not (tenant and client and secret):
+        raise ValueError("TENANT_ID, CLIENT_ID, and CLIENT_SECRET must be set for Power BI auth.")
+
+    cred = ClientSecretCredential(
+        tenant_id=tenant,
+        client_id=client,
+        client_secret=secret,
+    )
+    scope = "https://analysis.windows.net/powerbi/api/.default"
+    token = cred.get_token(scope).token
+
+    return {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+
+def _pbi_get(url: str, headers: Dict[str, str]) -> Dict:
+    r = requests.get(url, headers=headers, timeout=30)
+    r.raise_for_status()
+    return r.json()
+
+def _pbi_list_workspaces(headers: Dict[str, str]) -> List[Dict]:
+    url = f"{BASE_PBI}/groups"
+    items: List[Dict] = []
+    while url:
+        data = _pbi_get(url, headers)
+        items.extend(data.get("value", []))
+        url = data.get("@odata.nextLink")
+    return items
+
+def _pbi_list_reports_in_workspace(group_id: str, headers: Dict[str, str]) -> List[Dict]:
+    url = f"{BASE_PBI}/groups/{group_id}/reports"
+    items: List[Dict] = []
+    while url:
+        data = _pbi_get(url, headers)
+        items.extend(data.get("value", []))
+        url = data.get("@odata.nextLink")
+    return items
+
+def _resolve_ids_for_names(df_names: pd.DataFrame, headers: Dict[str, str]) -> Dict[Tuple[str, str], Tuple[str, str]]:
+    """
+    Input: DataFrame with columns 'workspace_name', 'report_name'
+    Output: {(workspace_name, report_name) -> (group_id, report_id)}
+    Raises if a workspace name appears multiple times (ambiguous) or a report
+    name is duplicated within a workspace.
+    """
+    # Unique workspace names we need
+    workspaces_needed = sorted(
+        set(df_names["workspace_name"].dropna().astype(str).map(str.strip))
+    )
+
+    # Map workspace name (casefold) -> set(ids)
+    groups = _pbi_list_workspaces(headers)
+    ws_name_to_ids: Dict[str, Set[str]] = {}
+    for g in groups:
+        nm = (g.get("name") or "").strip()
+        gid = g.get("id")
+        if nm and gid:
+            ws_name_to_ids.setdefault(nm.casefold(), set()).add(gid)
+
+    # Resolve workspace IDs (ensure uniqueness)
+    ws_name_to_id: Dict[str, str] = {}
+    dup_ws: List[Tuple[str, List[str]]] = []
+    for ws in workspaces_needed:
+        ids = list(ws_name_to_ids.get(ws.casefold(), []))
+        if not ids:
+            raise ValueError(f"Workspace '{ws}' not found in tenant.")
+        if len(ids) > 1:
+            dup_ws.append((ws, ids))
+        else:
+            ws_name_to_id[ws] = ids[0]
+    if dup_ws:
+        raise ValueError(
+            "Multiple workspaces share the same name; disambiguate by ID:\n"
+            + "\n".join(f"  - {ws}: {ids}" for ws, ids in dup_ws)
+        )
+
+    # For each workspace, fetch reports once and build name -> id map
+    pair_to_ids: Dict[Tuple[str, str], Tuple[str, str]] = {}
+    for ws_name, gid in ws_name_to_id.items():
+        reports = _pbi_list_reports_in_workspace(gid, headers)
+        rep_name_to_ids: Dict[str, List[str]] = {}
+        for r in reports:
+            rn = (r.get("name") or "").casefold()
+            rep_name_to_ids.setdefault(rn, []).append(r.get("id"))
+
+        # Resolve all report names in this workspace
+        mask = df_names["workspace_name"].map(str.strip) == ws_name
+        for rn in df_names.loc[mask, "report_name"].dropna().astype(str).map(str.strip).unique():
+            ids = rep_name_to_ids.get(rn.casefold(), [])
+            if not ids:
+                raise ValueError(f"Report '{rn}' not found in workspace '{ws_name}'.")
+            if len(ids) > 1:
+                raise ValueError(
+                    f"Multiple reports named '{rn}' in workspace '{ws_name}': {ids}"
+                )
+            pair_to_ids[(ws_name, rn)] = (gid, ids[0])
+
+    return pair_to_ids
+
+# -------------------- EXCEL CONFIG LOADER (NEW) -------------------- #
+def load_reports_from_excel(xlsx_path: str, sheet_name: Optional[str] = None) -> List[dict]:
+    """
+    Reads an Excel config (default sheet 'Config_file') with columns:
+      workspace_name, report_name, page_name, visual_name
+
+    For each (workspace_name, report_name) pair, looks up (group_id, report_id)
+    via the Power BI REST API, then builds:
+      [
+        {
+          "name": <report_name>,
+          "url":  f"https://embedfastdev-app.azurewebsites.net/groups/{group_id}/reports/{report_id}",
+          "pages": [
+            {"name": <page_name>, "visuals": [<visual_name>, ...]},
+            ...
+          ],
+        },
+        ...
+      ]
+    """
+    sheet = sheet_name or os.environ.get("REPORT_CONFIG_SHEET", "Config_file")
+    if not os.path.isfile(xlsx_path):
+        raise FileNotFoundError(f"Excel config '{xlsx_path}' not found.")
+
+    # Expect only name columns now
+    df = pd.read_excel(xlsx_path, sheet_name=sheet, dtype=str).fillna("")
+    required = {"workspace_name", "report_name"}
+    missing = required - set(map(str, df.columns))
+    if missing:
+        raise ValueError(f"Excel sheet is missing required columns: {sorted(missing)}")
+
+    # Resolve IDs from names (one token for all calls)
+    headers = _pbi_get_headers()
+    name_id_map = _resolve_ids_for_names(df[["workspace_name", "report_name"]], headers)
+
+    # Group rows by (workspace_name, report_name) -> pages/visuals
+    grouped: Dict[Tuple[str, str], Dict[str, List[str]]] = {}
+    for _, r in df.iterrows():
+        ws_name = str(r.get("workspace_name", "")).strip()
+        rp_name = str(r.get("report_name", "")).strip()
+        pg_name = str(r.get("page_name", "")).strip()
+        vis     = str(r.get("visual_name", "")).strip()
+
+        if not (ws_name and rp_name):
+            # Skip incomplete rows
+            continue
+
+        key = (ws_name, rp_name)
+        if key not in grouped:
+            grouped[key] = {}
+        if pg_name:
+            grouped[key].setdefault(pg_name, [])
+            if vis:
+                grouped[key][pg_name].append(vis)
+
+    # Materialize runner/worker shape
+    reports: List[dict] = []
+    for (ws_name, rp_name), pages in grouped.items():
+        gid, rid = name_id_map[(ws_name, rp_name)]
+        url = f"https://embedfastdev-app.azurewebsites.net/groups/{gid}/reports/{rid}"
+
+        page_list = []
+        for pg_name, visuals in pages.items():
+            # de-dup visuals preserving order
+            seen = set()
+            vs = []
+            for v in visuals:
+                k = _norm(v)
+                if k not in seen:
+                    seen.add(k)
+                    vs.append(v)
+            page_list.append({"name": pg_name, "visuals": vs})
+
+        reports.append({"name": rp_name, "url": url, "pages": page_list})
+
+    return reports
 
 # ======================
 # COMPARISON UTIL FUNCTIONS (as-provided)
@@ -193,30 +385,25 @@ def compare_files(file1, file2, output_file):
     highlight_cells(wb["MSTR_File"], df1, df1_clean, df2_clean, cols)
     highlight_cells(wb["PBI_File"], df2, df2_clean, df1_clean, cols)
     wb.save(output_file)
-
-    return output_file
+    is_fully_matched = df1['Status'].eq('Matched').all() and df2['Status'].eq('Matched').all()
+    return output_file, is_fully_matched
 
 # -------------------- RUNNER (MULTI-REPORT) -------------------- #
 class ReportsRunner:
     def __init__(self):
-        cfg_path = os.environ.get("REPORT_CONFIG_FILE", "reports.json")
-        if not os.path.isfile(cfg_path):
-            raise FileNotFoundError(
-                f"Config file '{cfg_path}' not found. Set REPORT_CONFIG_FILE or create reports.json."
-            )
-        with open(cfg_path, "r", encoding="utf-8") as f:
-            raw = json.load(f)
+        # Read Excel config instead of JSON
+        xlsx_path = os.environ.get("REPORT_CONFIG_XLSX", "reports.xlsx")
+        sheet     = os.environ.get("REPORT_CONFIG_SHEET", "Config_file")
 
-        # Support both new and old keys
-        all_reports = raw.get("PowerBI_reports") or raw.get("reports") or []
+        all_reports = load_reports_from_excel(xlsx_path, sheet_name=sheet)
         if not all_reports:
-            raise ValueError("Config has no 'PowerBI_reports' or 'reports' entries.")
+            raise ValueError("Excel config has no valid rows (check required columns and data).")
 
         desired = os.environ.get("REPORT_NAME")
         if desired:
             self.reports = [r for r in all_reports if _norm(r.get("name")) == _norm(desired)]
             if not self.reports:
-                raise ValueError(f"REPORT_NAME='{desired}' not found in config.")
+                raise ValueError(f"REPORT_NAME='{desired}' not found in Excel config.")
         else:
             self.reports = all_reports  # iterate all
 
@@ -386,6 +573,7 @@ class ReportsRunner:
 
             comparison_results = {"Comparison": {}}
             print("Starting comparisons (directory-based)...")
+            page_summary = {}
 
             for report, pages in mstr_map.items():
                 if report not in pbi_map:
@@ -409,13 +597,47 @@ class ReportsRunner:
                             visual_name = os.path.splitext(os.path.basename(mstr_file))[0]
                             output_path = os.path.join(output_subdir, f"{visual_name}_comparison.xlsx")
 
-                            compare_files(mstr_file, pbi_file, output_path)
-                            comparison_results["Comparison"][report][page][visual_name] = output_path
+                            cmp_path, is_match = compare_files(mstr_file, pbi_file, output_path)
+                            comparison_results["Comparison"][report][page][visual_name] = cmp_path
+
+                            # Update summary counters
+                            key = (report, page)
+                            if key not in page_summary:
+                                page_summary[key] = {"matched": 0, "not_matched": 0, "not_matched_paths": []}
+                            if is_match:
+                                page_summary[key]["matched"] += 1
+                            else:
+                                page_summary[key]["not_matched"] += 1
+                                page_summary[key]["not_matched_paths"].append(cmp_path)
+                        # ---- Write comparisons/summary.xlsx ----
+            summary_rows = []
+            for (rep, pg), agg in page_summary.items():
+                summary_rows.append({
+                    "Reports": rep,
+                    "Page": pg,
+                    "Not Matched (Count of visuals)": agg.get("not_matched", 0),
+                    "Matched (Count of visuals)": agg.get("matched", 0),
+                    "Not Matched Visual Paths": "\n".join(agg.get("not_matched_paths", [])),
+                })
+
+            if summary_rows:
+                import pandas as _pd
+                os.makedirs(output_dir, exist_ok=True)
+                summary_path = os.path.join(output_dir, "summary.xlsx")
+                _pd.DataFrame(summary_rows, columns=[
+                    "Reports",
+                    "Page",
+                    "Not Matched (Count of visuals)",
+                    "Matched (Count of visuals)",
+                    "Not Matched Visual Paths",
+                ]).to_excel(summary_path, sheet_name="Summary", index=False)
+                print(f"Summary saved: {summary_path}")
+            else:
+                print("No comparison pairs found; summary not created.")
 
             # Save JSON result mapping
             with open("comparison_results.json", "w", encoding="utf-8") as f:
                 json.dump(comparison_results, f, indent=2)
-
             print("\n✅ All comparisons done (directory-based). Results mapping saved in comparison_results.json")
 
 
