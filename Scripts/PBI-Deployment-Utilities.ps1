@@ -311,6 +311,3 @@ function Get-WorkspaceIdByName {
         throw
     }
 }
-
-# Export functions for use in other scripts
-Export-ModuleMember -Function Deploy-PBISemanticModel, Deploy-PBIReport, Rebind-ReportToDataset, Get-WorkspaceIdByName, Ensure-FabricConnection, Bind-Connection-ToSemanticModel
