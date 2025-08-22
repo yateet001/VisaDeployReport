@@ -129,6 +129,31 @@ function Deploy-PBIReport {
         }
     }
 }
+function Rebind-ReportToDataset {
+    param(
+        [Parameter(Mandatory=$true)][string]$AccessToken,
+        [Parameter(Mandatory=$true)][string]$WorkspaceId,
+        [Parameter(Mandatory=$true)][string]$ReportId,
+        [Parameter(Mandatory=$true)][string]$DatasetId,
+        [string]$FabricApiEndpoint = "https://api.fabric.microsoft.com/v1"
+    )
+
+    Write-Host "Rebinding report '$ReportId' to dataset '$DatasetId' in workspace '$WorkspaceId'..." -ForegroundColor Cyan
+
+    $url = "$FabricApiEndpoint/workspaces/$WorkspaceId/reports/$ReportId/Rebind"
+    $body = @{ datasetId = $DatasetId } | ConvertTo-Json -Depth 5
+    $headers = @{ Authorization = "Bearer $AccessToken"; "Content-Type" = "application/json" }
+
+    try {
+        Invoke-RestMethod -Method Post -Uri $url -Headers $headers -Body $body -ContentType "application/json" -ErrorAction Stop
+        Write-Host "✔ Rebind successful." -ForegroundColor Green
+        return $true
+    }
+    catch {
+        Write-Host "✖ Failed to rebind report: $($_.Exception.Message)" -ForegroundColor Red
+        throw
+    }
+}
 
 function Get-WorkspaceIdByName {
     param(
@@ -150,5 +175,5 @@ function Get-WorkspaceIdByName {
     return $workspace.id
 }
 
-Export-ModuleMember -Function Get-PBIAccessToken, Get-WorkspaceIdByName, Deploy-PBISemanticModel, Deploy-PBIReport
+Export-ModuleMember -Function Get-PBIAccessToken, Get-WorkspaceIdByName, Deploy-PBISemanticModel, Deploy-PBIReport, Rebind-ReportToDataset
 

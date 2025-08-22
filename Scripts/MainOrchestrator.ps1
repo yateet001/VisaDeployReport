@@ -81,13 +81,12 @@ try {
     # 2) Deploy Semantic Model
     # ----------------------------
     Write-Host "`n--- STEP 4: SEMANTIC MODEL DEPLOYMENT ---"
-    $semanticModelId = Deploy-PBISemanticModel -WorkspaceId $WorkspaceId `
-                                               -SemanticModelName $SemanticModelName `
-                                               -ModelDefinitionPath $ModelDefinitionPath `
-                                               -AccessToken $AccessToken
-
-    if (-not $semanticModelId) { throw "Semantic model deployment returned no ID." }
-    Write-Host "Semantic model result - ID: $semanticModelId"
+    $semanticResult = Deploy-PBISemanticModel -WorkspaceId $WorkspaceId `
+                                              -SemanticModelName $SemanticModelName `
+                                              -ModelDefinitionPath $ModelDefinitionPath `
+                                              -AccessToken $AccessToken
+    if (-not $semanticResult.Success) { throw "Semantic model deployment failed: $($semanticResult.Error)" }
+    $semanticModelId = $semanticResult.ModelId
 
     # ----------------------------
     # 3) Ensure Fabric Connection & Bind
@@ -102,19 +101,53 @@ try {
     # ----------------------------
     # 4) Deploy Report
     # ----------------------------
-    Write-Host "`n--- STEP 6: REPORT DEPLOYMENT ---"
-    $reportId = Deploy-PBIReport -WorkspaceId $WorkspaceId `
-                                 -ReportName $ReportName `
-                                 -ReportPath $ReportDefinitionPath `
-                                 -SemanticModelId $semanticModelId `
-                                 -AccessToken $AccessToken
+    Write-Host "`n--- STEP 6: REPORT DEPLOYMENT ---" -ForegroundColor Yellow
 
-    if (-not $reportId) { throw "Report deployment failed or returned no ID." }
-    Write-Host "✔ Report deployed successfully. ReportId = $reportId" -ForegroundColor Green
+    # Call existing Deploy-PBIReport (may return id or object)
+    $reportResult = Deploy-PBIReport `
+                    -WorkspaceId $WorkspaceId `
+                    -ReportName $ReportName `
+                    -ReportPath $ReportDefinitionPath `
+                    -SemanticModelId $semanticModelId `
+                    -AccessToken $AccessToken
 
-    Write-Host "`n========== Orchestration Completed Successfully ==========" -ForegroundColor Cyan
-}
-catch {
-    Write-Host "ERROR: $($_.Exception.Message)" -ForegroundColor Red
-    exit 1
-}
+    # Resolve reportId robustly
+    $reportId = $null
+
+    if ($null -ne $reportResult) {
+        if ($reportResult -is [string]) {
+            $reportId = $reportResult
+        } elseif ($reportResult.PSObject.Properties.Match('id').Count -gt 0) {
+            $reportId = $reportResult.id
+        }
+    }
+
+    # If still null, look up by name
+    if ([string]::IsNullOrWhiteSpace($reportId)) {
+        Write-Host "Report ID not returned; looking up report by name..." -ForegroundColor Yellow
+        $listUri = "$($config.FabricAPIEndpoint)/workspaces/$WorkspaceId/reports"
+        $listResp = Invoke-RestMethod -Method Get -Uri $listUri -Headers $Headers
+        $reportHit = @($listResp.value) | Where-Object { $_.displayName -eq $ReportName -or $_.name -eq $ReportName } | Select-Object -First 1
+        if ($reportHit) { $reportId = $reportHit.id }
+    }
+
+    if (-not $reportId) {
+        throw "Report deployment failed or report ID not found for '$ReportName'."
+    }
+
+    Write-Host "✔ Report deployed. ReportId: $reportId" -ForegroundColor Green
+
+    # Now rebind the PBIP report to the deployed semantic model
+    try {
+        $reb = Rebind-ReportToDataset -AccessToken $AccessToken -WorkspaceId $WorkspaceId -ReportId $reportId -DatasetId $semanticModelId -FabricApiEndpoint $config.FabricAPIEndpoint
+        Write-Host "✔ Report '$ReportName' rebound to semantic model id $semanticModelId." -ForegroundColor Green
+    }
+        catch {
+            throw "Failed to rebind report '$ReportName' to semantic model. $_"
+        }
+    }
+    catch {
+        Write-Host "❌ Error in orchestration: $_" -ForegroundColor Red
+        exit 1
+    }
+    
