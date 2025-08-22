@@ -146,15 +146,28 @@ stages:
                   }
                 }
 
-          # Step 4: Run Main PBIP Deployment Script with correct parameters
+          # Step 4a: Run Main PBIP Deployment Script WITH SkipValidation (when Skip_Validation is true)
           - task: PowerShell@2
-            displayName: "Deploy PBIP Reports to Power BI"
+            displayName: "Deploy PBIP Reports to Power BI (Skip Validation)"
+            condition: eq('${{ parameters.Skip_Validation }}', true)
             inputs:
               filePath: 'Scripts/MainOrchestrator.ps1'
               arguments: >
                 -Environment "${{ parameters.Deployment_Environment }}" 
                 -ConfigFile "$(config_file)"
-                ${{ eq(parameters.Skip_Validation, true) && '-SkipValidation' || '' }}
+                -SkipValidation
+              pwsh: true
+              workingDirectory: '$(Build.SourcesDirectory)'
+
+          # Step 4b: Run Main PBIP Deployment Script WITHOUT SkipValidation (when Skip_Validation is false)
+          - task: PowerShell@2
+            displayName: "Deploy PBIP Reports to Power BI (With Validation)"
+            condition: eq('${{ parameters.Skip_Validation }}', false)
+            inputs:
+              filePath: 'Scripts/MainOrchestrator.ps1'
+              arguments: >
+                -Environment "${{ parameters.Deployment_Environment }}" 
+                -ConfigFile "$(config_file)"
               pwsh: true
               workingDirectory: '$(Build.SourcesDirectory)'
 
