@@ -1,109 +1,154 @@
-# PBI-Deployment-Utilities.ps1
-# This script contains utility functions for Power BI deployment
+<#
+.SYNOPSIS
+  Power BI Deployment Utilities
+  Handles deployment of semantic models and reports into Power BI workspaces.
+#>
 
-function Deploy-Report {
+function Get-PBIAccessToken {
     param(
-        [Parameter(Mandatory=$true)]
-        [string]$ReportFolder,
-        [Parameter(Mandatory=$true)]
-        [string]$WorkspaceId,
-        [Parameter(Mandatory=$true)]
-        [string]$AccessToken,
-        [Parameter(Mandatory=$true)]
-        [string]$ReportName
+        [string]$TenantId,
+        [string]$ClientId,
+        [string]$ClientSecret,
+        [string]$Scope = "https://analysis.windows.net/powerbi/api/.default"
     )
-    
+
+    $body = @{
+        grant_type    = "client_credentials"
+        client_id     = $ClientId
+        client_secret = $ClientSecret
+        scope         = $Scope
+    }
+
+    $response = Invoke-RestMethod -Method Post -Uri "https://login.microsoftonline.com/$TenantId/oauth2/v2.0/token" -Body $body
+    return $response.access_token
+}
+
+function Deploy-PBISemanticModel {
+    param(
+        [string]$WorkspaceId,
+        [string]$SemanticModelName,
+        [string]$ModelDefinitionPath,
+        [string]$AccessToken
+    )
+
+    $headers = @{ "Authorization" = "Bearer $AccessToken" }
+
     try {
-        Write-Host "Deploying report: $ReportName"
-        
-        # Find report.json file
-        $reportJsonFile = Join-Path $ReportFolder "report.json"
-        
-        if (-not (Test-Path $reportJsonFile)) {
-            throw "report.json file not found in report folder"
+        # Check existing semantic models
+        $url = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels"
+        $existingModels = Invoke-RestMethod -Uri $url -Headers $headers -Method Get
+        $existingModel = $existingModels.value | Where-Object { $_.displayName -eq $SemanticModelName }
+
+        if ($existingModel) {
+            Write-Host "Semantic model '$SemanticModelName' already exists. Updating..."
+            $semanticModelId = $existingModel.id
+
+            $updateUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels/$semanticModelId/import"
+            $body = Get-Content -Raw -Path $ModelDefinitionPath
+            Invoke-RestMethod -Uri $updateUrl -Headers $headers -Method Post -Body $body -ContentType "application/json"
         }
-        
-        # Read report definition
-        $reportDefinition = Get-Content $reportJsonFile -Raw
-        Write-Host "Report definition loaded: $($reportDefinition.Length) characters"
-        
-        # Prepare deployment payload
-        $deploymentPayload = @{
-            "name" = $ReportName
-            "definition" = @{
-                "parts" = @(
-                    @{
-                        "path" = "report.json"
-                        "payload" = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($reportDefinition))
-                        "payloadType" = "InlineBase64"
-                    }
-                )
-            }
-        } | ConvertTo-Json -Depth 10
-        
-        # Deploy report using Fabric API
-        $deployUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/reports"
-        
-        $headers = @{ 
-            "Authorization" = "Bearer $AccessToken"
-            "Content-Type" = "application/json"
+        else {
+            Write-Host "Semantic model '$SemanticModelName' not found. Creating new one..."
+            $body = Get-Content -Raw -Path $ModelDefinitionPath
+            $createUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels/import"
+            $resp = Invoke-RestMethod -Uri $createUrl -Headers $headers -Method Post -Body $body -ContentType "application/json"
+            $semanticModelId = $resp.id
         }
-        
-        try {
-            $response = Invoke-RestMethod -Uri $deployUrl -Method Post -Body $deploymentPayload -Headers $headers
-            Write-Host "✓ Report deployed successfully"
-            return $true
-        } catch {
-            if ($_.Exception.Response.StatusCode -eq 409) {
-                Write-Host "Report already exists, attempting update..."
-                
-                # Try to update existing report
-                $updateUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/reports/$ReportName"
-                try {
-                    $updateResponse = Invoke-RestMethod -Uri $updateUrl -Method Patch -Body $deploymentPayload -Headers $headers
-                    Write-Host "✓ Report updated successfully"
-                    return $true
-                } catch {
-                    Write-Warning "Failed to update report: $_"
-                    return $false
-                }
-            } else {
-                throw $_
-            }
+
+        return @{
+            Success = $true
+            Error   = $null
+            Warning = $null
+            ModelId = $semanticModelId
         }
-        
-    } catch {
-        Write-Error "Failed to deploy report: $_"
-        return $false
+    }
+    catch {
+        return @{
+            Success = $false
+            Error   = $_.Exception.Message
+            Warning = $null
+            ModelId = $null
+        }
+    }
+}
+
+
+function Deploy-PBIReport {
+    param(
+        [string]$WorkspaceId,
+        [string]$ReportName,
+        [string]$ReportPath,
+        [string]$SemanticModelId,
+        [string]$AccessToken
+    )
+
+    $headers = @{ "Authorization" = "Bearer $AccessToken" }
+
+    try {
+        if (-not $SemanticModelId) {
+            throw "No SemanticModelId provided for report deployment."
+        }
+
+        # Check if report exists
+        $url = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/reports"
+        $existingReports = Invoke-RestMethod -Uri $url -Headers $headers -Method Get
+        $existingReport = $existingReports.value | Where-Object { $_.name -eq $ReportName }
+
+        if ($existingReport) {
+            Write-Host "Report '$ReportName' already exists. Updating..."
+            $reportId = $existingReport.id
+
+            $updateUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/reports/$reportId/import"
+            $body = @{
+                displayName = $ReportName
+                datasetId   = $SemanticModelId
+            } | ConvertTo-Json
+
+            Invoke-RestMethod -Uri $updateUrl -Headers $headers -Method Post -Body $body -ContentType "application/json"
+        }
+        else {
+            Write-Host "Report '$ReportName' not found. Creating new one..."
+            $createUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/reports/import"
+            $body = @{
+                displayName = $ReportName
+                datasetId   = $SemanticModelId
+            } | ConvertTo-Json
+
+            Invoke-RestMethod -Uri $createUrl -Headers $headers -Method Post -Body $body -ContentType "application/json"
+        }
+
+        return @{
+            Success = $true
+            Error   = $null
+        }
+    }
+    catch {
+        return @{
+            Success = $false
+            Error   = $_.Exception.Message
+        }
     }
 }
 
 function Get-WorkspaceIdByName {
     param(
-        [Parameter(Mandatory=$true)]
         [string]$WorkspaceName,
-        [Parameter(Mandatory=$true)]
         [string]$AccessToken
     )
-    
-    try {
-        $headers = @{
-            "Authorization" = "Bearer $AccessToken"
-            "Content-Type" = "application/json"
-        }
-        
-        $uri = "https://api.fabric.microsoft.com/v1/workspaces"
-        $response = Invoke-RestMethod -Uri $uri -Method Get -Headers $headers
-        
-        $workspace = $response.value | Where-Object { $_.displayName -eq $WorkspaceName }
-        
-        if ($workspace) {
-            return $workspace.id
-        } else {
-            throw "Workspace '$WorkspaceName' not found"
-        }
-    } catch {
-        Write-Error "Failed to get workspace ID: $_"
-        return $null
+
+    $headers = @{ "Authorization" = "Bearer $AccessToken" }
+    $url = "https://api.fabric.microsoft.com/v1/workspaces"
+
+    $resp = Invoke-RestMethod -Uri $url -Headers $headers -Method Get
+
+    $workspace = $resp.value | Where-Object { $_.displayName -eq $WorkspaceName }
+
+    if (-not $workspace) {
+        throw "Workspace '$WorkspaceName' not found."
     }
+
+    return $workspace.id
 }
+
+Export-ModuleMember -Function Get-PBIAccessToken, Get-WorkspaceIdByName, Deploy-PBISemanticModel, Deploy-PBIReport
+
