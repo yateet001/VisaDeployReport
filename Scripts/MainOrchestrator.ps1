@@ -828,26 +828,11 @@ function Deploy-PBIPUsingFabricAPI {
         
         # Step 6: Deploy Report
         Write-Host "`n--- STEP 6: REPORT DEPLOYMENT ---"
-        $reportName = "Demo Report"
-        $reportPath = Join-Path $RepoRoot "Demo Report\Demo Report.Report"
-
-        Write-Host "Deploying report: $reportName"
-        Write-Host "Binding report to semantic model ID: $semanticModelId"
-
-        # Check if report already exists in workspace
-        $existingReport = Get-PBIReport -WorkspaceId $workspaceId -ReportName $reportName
-
-        if ($existingReport) {
-            Write-Host "Report '$reportName' already exists. Rebinding to dataset..."
-            Update-PBIReport -WorkspaceId $workspaceId -ReportId $existingReport.id -SemanticModelId $semanticModelId -ReportPath $reportPath
-            Write-Host "✓ Report successfully rebound to dataset $semanticModelId"
+        $reportSuccess = Deploy-Report -ReportFolder $validation.ReportFolder -WorkspaceId $WorkspaceId -AccessToken $AccessToken -ReportName $ReportName -SemanticModelId $semanticModelId
+        
+        if (-not $reportSuccess) {
+            throw "Report deployment failed"
         }
-        else {
-            Write-Host "Report '$reportName' does not exist. Creating new report..."
-            New-PBIReport -WorkspaceId $workspaceId -SemanticModelId $semanticModelId -ReportPath $reportPath
-            Write-Host "✓ Report '$reportName' created and bound to dataset $semanticModelId"
-        }
-
         
         # Step 7: Wait for report to appear
         Write-Host "`n--- STEP 7: REPORT VERIFICATION ---"
