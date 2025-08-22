@@ -14,10 +14,10 @@ parameters:
   - name: Deployment_Environment
     displayName: "Deployment Environment"
     type: string
-    default: "DEV"
+    default: "Dev"
     values:
-      - "DEV"
-      - "PROD"
+      - "Dev"
+      - "Prod"
 
   - name: Environment_Type
     displayName: "Environment Type"
