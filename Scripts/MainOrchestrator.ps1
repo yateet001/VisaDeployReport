@@ -77,6 +77,7 @@ function Get-PBIPFiles {
     )
 
     if ($Folder) {
+        Write-Host "Folder path : $Folder"
         $target = Join-Path $ArtifactPath $Folder
     } else {
         $target = $ArtifactPath
@@ -649,10 +650,10 @@ function Deploy-Report {
         
         # Add semantic model binding if provided
         if ($SemanticModelId) {
-            $deploymentPayload["datasetId"] = $SemanticModelId
-            Write-Host "Binding report to semantic model ID: $SemanticModelId"
+             $itemsReportPayload["datasetId"] = $SemanticModelId
+             Write-Host "Binding report to semantic model ID: $SemanticModelId"
         }
-        
+
         $deploymentPayloadJson = $itemsReportPayload | ConvertTo-Json -Depth 50
         
         $deployUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/reports"
@@ -705,17 +706,19 @@ function Deploy-Report {
                         # Try to update the existing report using updateDefinition endpoint
                         $updateUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/reports/$($existingReport.id)/updateDefinition"
                         
+                        $reportDefinition = Get-Content -Path $reportJsonFile -Raw
                         $updatePayload = @{
-                            "definition" = @{
-                                "parts" = @(
-                                    @{
-                                        "path" = "report.json"
-                                        "payload" = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($reportDefinition))
-                                        "payloadType" = "InlineBase64"
-                                    }
-                                )
+                        "definition" = @{
+                        "parts" = @(
+                            @{
+                                    "path"       = "report.json"
+                                    "payload"    = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($reportDefinition))
+                                    "payloadType" = "InlineBase64"
                             }
-                        } | ConvertTo-Json -Depth 10
+                            )
+                        }
+                    } | ConvertTo-Json -Depth 10
+
                         
                         try {
                             $updateResponse = Invoke-RestMethod -Uri $updateUrl -Method Post -Body $updatePayload -Headers $headers
@@ -741,8 +744,12 @@ function Deploy-Report {
                 try {
                     $createUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/items"
                     $payloadObj = $itemsReportPayload.PSObject.Copy()
-                    if ($SemanticModelId) { $payloadObj["datasetId"] = $SemanticModelId }
+                    if ($SemanticModelId) {
+                        $payloadObj["datasetId"] = $SemanticModelId
+                        Write-Host "Binding report to semantic model ID: $SemanticModelId"
+                    }
                     $payload = $payloadObj | ConvertTo-Json -Depth 50
+
                     $response2 = Invoke-RestMethod -Uri $createUrl -Method Post -Body $payload -Headers $headers
                     Write-Host "✓ Report deployed via Items API"
                     return $true
