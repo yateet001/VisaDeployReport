@@ -14,10 +14,10 @@ parameters:
   - name: Deployment_Environment
     displayName: "Deployment Environment"
     type: string
-    default: "VISACICDProd"
+    default: "DEV"
     values:
-      - "VISACICDDev"
-      - "VISACICDProd"
+      - "DEV"
+      - "PROD"
 
   - name: Environment_Type
     displayName: "Environment Type"
@@ -42,7 +42,7 @@ stages:
   - stage: Approval_Stage
     jobs:
       - deployment: Approval
-        environment: ${{ parameters.Deployment_Environment }}
+        environment: UDP-${{ parameters.Deployment_Environment }}-Deploy
         strategy:
           runOnce:
             deploy:
