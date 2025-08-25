@@ -14,10 +14,10 @@ parameters:
   - name: Deployment_Environment
     displayName: "Deployment Environment"
     type: string
-    default: "DEV"
+    default: "VISACICDProd"
     values:
-      - "DEV"
-      - "PROD"
+      - "VISACICDDev"
+      - "VISACICDProd"
 
   - name: Environment_Type
     displayName: "Environment Type"
