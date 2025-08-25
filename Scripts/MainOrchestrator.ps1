@@ -396,213 +396,96 @@ function Verify-DeploymentResult {
     }
 }
 
-function Deploy-SemanticModel {
-    param(
-        [Parameter(Mandatory=$true)]
-        [string]$SemanticModelFolder,
-        [Parameter(Mandatory=$true)]
-        [string]$WorkspaceId,
-        [Parameter(Mandatory=$true)]
-        [string]$AccessToken,
-        [Parameter(Mandatory=$true)]
-        [string]$ModelName,
-        [Parameter(Mandatory=$true)]
-        [string]$ServerName,
-        [Parameter(Mandatory=$true)]
-        [string]$DatabaseName
+<#
+.SYNOPSIS
+  Power BI Deployment Utilities
+  Handles deployment of semantic models and reports into Power BI workspaces.
+#>
+
+param (
+    [Parameter(Mandatory = $true)]
+    [string]$WorkspaceId,   # From MainOrchestrator
+    [Parameter(Mandatory = $true)]
+    [string]$DeployUrl,     # API endpoint for deployment
+    [Parameter(Mandatory = $true)]
+    [string]$PBIPPath,      # Path to PBIP project
+    [Parameter(Mandatory = $true)]
+    [string]$SemanticModelName, # Name of the semantic model (dataset)
+    [Parameter(Mandatory = $true)]
+    [string]$Token          # Bearer token
+)
+
+function Invoke-PowerBIRestMethod {
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$Method,
+        [Parameter(Mandatory = $true)]
+        [string]$Url,
+        [Parameter(Mandatory = $false)]
+        $Body
     )
-    
+
+    $headers = @{
+        "Content-Type"  = "application/json"
+        "Authorization" = "Bearer $Token"
+    }
+
     try {
-        Write-Host "Deploying semantic model: $ModelName"
-        
-        $modelBimFile = Get-ChildItem -Path $SemanticModelFolder -Filter "model.bim" -Recurse | Select-Object -First 1
-        
-        if (-not $modelBimFile) {
-            throw "model.bim file not found in semantic model folder"
+        if ($null -ne $Body) {
+            return Invoke-RestMethod -Method $Method -Uri $Url -Headers $headers -Body ($Body | ConvertTo-Json -Depth 10 -Compress)
         }
-
-        # Load and update the model definition for connection switching
-        $modelDefinitionRaw = Get-Content $modelBimFile.FullName -Raw
-        Write-Host "Model definition loaded: $($modelDefinitionRaw.Length) characters"
-
-        try {
-            $modelJson = $modelDefinitionRaw | ConvertFrom-Json
-        } catch {
-            throw "Failed to parse model.bim JSON: $_"
-        }
-
-        $updatesApplied = 0
-        if ($modelJson.model -and $modelJson.model.tables) {
-            foreach ($table in $modelJson.model.tables) {
-                if ($table.partitions) {
-                    foreach ($partition in $table.partitions) {
-                        if ($partition.source -and $partition.source.type -eq 'm' -and $partition.source.expression) {
-                            $pattern = 'Sql\.Database\(".*?"\s*,\s*".*?"\)'
-                            $replacement = 'Sql.Database("' + $ServerName + '", "' + $DatabaseName + '")'
-
-                            if ($partition.source.expression -is [System.Array]) {
-                                $newExpr = @()
-                                foreach ($line in $partition.source.expression) {
-                                    $newExpr += ($line -replace $pattern, $replacement)
-                                }
-                                $partition.source.expression = $newExpr
-                                $updatesApplied++
-                            } elseif ($partition.source.expression -is [string]) {
-                                $partition.source.expression = ($partition.source.expression -replace $pattern, $replacement)
-                                $updatesApplied++
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        if ($updatesApplied -gt 0) {
-            Write-Host "✓ Connection switching applied to $updatesApplied partition(s)"
-        } else {
-            Write-Warning "No Sql.Database() expressions found to update in model.bim"
-        }
-
-        $modelDefinition = $modelJson | ConvertTo-Json -Depth 100
-        
-        # Build parts for semantic model (typed endpoint expects top-level paths)
-        $smParts = @()
-        $smDir = Split-Path $modelBimFile.FullName -Parent
-        # model.bim from in-memory updated JSON
-        $smParts += @{
-            path = 'model.bim'
-            payload = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($modelDefinition))
-            payloadType = 'InlineBase64'
-        }
-        foreach ($optional in @('diagramLayout.json','definition.pbism')) {
-            $optPath = Join-Path $smDir $optional
-            if (Test-Path $optPath) {
-                $bytes = [System.IO.File]::ReadAllBytes($optPath)
-                $smParts += @{ path = $optional; payload = [Convert]::ToBase64String($bytes); payloadType = 'InlineBase64' }
-            }
-        }
-
-        $deploymentPayload = @{
-            displayName = $ModelName
-            description = "Semantic model deployed from PBIP: $ModelName"
-            definition = @{ parts = $smParts }
-        } | ConvertTo-Json -Depth 50
-        
-        $deployUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels"
-        
-        $headers = @{ 
-            "Authorization" = "Bearer $AccessToken"
-            "Content-Type" = "application/json"
-        }
-        
-        try {
-            # Create via dedicated semanticModels endpoint and handle async operation
-            $createResp = Invoke-WebRequest -Uri $deployUrl -Method Post -Body $deploymentPayload -Headers $headers -ContentType 'application/json'
-            $modelId = $null
-            $content = $null
-            try { $content = $createResp.Content | ConvertFrom-Json } catch {}
-            if ($content -and $content.id) { $modelId = $content.id }
-            if (-not $modelId) {
-                $opLocation = $createResp.Headers['Operation-Location']
-                if (-not $opLocation) { $opLocation = $createResp.Headers['operation-location'] }
-                if ($opLocation) {
-                    Write-Host "Waiting for semantic model creation operation to complete..."
-                    $opOk = Wait-FabricOperationCompletion -OperationStatusUrl $opLocation -AccessToken $AccessToken -MaxWaitSeconds 180
-                    if (-not $opOk) { throw "Semantic model creation operation did not complete successfully" }
-                }
-                # Resolve by name
-                $listUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels"
-                $listResponse = Invoke-RestMethod -Uri $listUrl -Method Get -Headers $headers
-                $existing = $listResponse.value | Where-Object { $_.displayName -eq $ModelName } | Select-Object -First 1
-                if ($existing) { $modelId = $existing.id }
-            }
-            if (-not $modelId) { throw "Semantic model id could not be determined after creation" }
-
-            Write-Host "✓ Semantic model deployed successfully"
-            Write-Host "Model ID: $modelId"
-            return @{
-                Success = $true
-                ModelId = $modelId
-            }
-        } catch {
-            $statusCode = $null
-            $errBody = $null
-            try { $statusCode = $_.Exception.Response.StatusCode } catch {}
-            try {
-                $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
-                $errBody = $reader.ReadToEnd()
-            } catch {}
-            
-            if ($statusCode -eq 409) {
-                Write-Host "Semantic model already exists, attempting to find existing model..."
-                
-                # Get existing semantic models to find the ID
-                try {
-                    $listUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels"
-                    $listResponse = Invoke-RestMethod -Uri $listUrl -Method Get -Headers $headers
-                    $existingModel = $listResponse.value | Where-Object { $_.displayName -eq $ModelName }
-                    
-                    if ($existingModel) {
-                        Write-Host "Found existing model with ID: $($existingModel.id)"
-                        
-                        # Try to update the existing model using updateDefinition endpoint
-                        $updateUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels/$($existingModel.id)/updateDefinition"
-                        
-                        $updatePayload = @{
-                            "definition" = @{
-                                "parts" = @(
-                                    @{
-                                        "path" = "model.bim"
-                                        "payload" = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($modelDefinition))
-                                        "payloadType" = "InlineBase64"
-                                    }
-                                )
-                            }
-                        } | ConvertTo-Json -Depth 10
-                        
-                        try {
-                            $updateResponse = Invoke-RestMethod -Uri $updateUrl -Method Post -Body $updatePayload -Headers $headers
-                            Write-Host "✓ Semantic model updated successfully"
-                            return @{
-                                Success = $true
-                                ModelId = $existingModel.id
-                            }
-                        } catch {
-                            Write-Warning "Failed to update semantic model definition: $_"
-                            # Even if update fails, return the existing model as success
-                            return @{
-                                Success = $true
-                                ModelId = $existingModel.id
-                                Warning = "Model exists but update failed"
-                            }
-                        }
-                    } else {
-                        Write-Warning "Could not find existing semantic model with name: $ModelName"
-                        return @{
-                            Success = $false
-                            Error = "Model conflict but could not locate existing model"
-                        }
-                    }
-                } catch {
-                    Write-Warning "Failed to list existing semantic models: $_"
-                    return @{
-                        Success = $false
-                        Error = "Model conflict and failed to resolve"
-                    }
-                }
-            } else {
-                Write-Error "Semantic model creation failed. Status: $statusCode Body: $errBody"
-                throw $_
-            }
-        }
-        
-    } catch {
-        Write-Error "Failed to deploy semantic model: $_"
-        return @{
-            Success = $false
-            Error = $_.Exception.Message
+        else {
+            return Invoke-RestMethod -Method $Method -Uri $Url -Headers $headers
         }
     }
+    catch {
+        Write-Error "Error calling Power BI REST API: $_"
+        throw
+    }
+}
+
+# Step 1: Check if semantic model already exists in workspace
+$checkUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels"
+$existingModels = Invoke-PowerBIRestMethod -Method GET -Url $checkUrl
+
+$semanticModel = $existingModels.value | Where-Object { $_.displayName -eq $SemanticModelName }
+
+if ($null -ne $semanticModel) {
+    Write-Output "Semantic model '$SemanticModelName' already exists. Updating instead of creating..."
+    
+    # Step 2a: Update the existing semantic model (PATCH)
+    $updateUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels/$($semanticModel.id)"
+    
+    $body = @{
+        displayName = $SemanticModelName
+        # You can include other properties like connections if needed
+    }
+
+    Invoke-PowerBIRestMethod -Method PATCH -Url $updateUrl -Body $body
+    Write-Output "✅ Successfully updated existing semantic model: $SemanticModelName"
+}
+else {
+    Write-Output "Semantic model '$SemanticModelName' not found. Creating new one..."
+    
+    # Step 2b: Create a new semantic model (POST)
+    $createUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels"
+    
+    $body = @{
+        displayName = $SemanticModelName
+        # Path to the PBIP model.json
+        definition = @{
+            parts = @(
+                @{
+                    path = "dataset/model.bim"
+                    payload = [System.IO.File]::ReadAllText((Join-Path $PBIPPath "dataset\model.bim"))
+                    payloadType = "Inline"
+                }
+            )
+        }
+    }
+
+    Invoke-PowerBIRestMethod -Method POST -Url $createUrl -Body $body
+    Write-Output "✅ Successfully created new semantic model: $SemanticModelName"
 }
 
 function Deploy-Report {
