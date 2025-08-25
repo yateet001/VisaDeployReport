@@ -766,148 +766,93 @@ function Deploy-Report {
     }
 }
 
-function Deploy-PBIPUsingFabricAPI {
-    param(
-        [Parameter(Mandatory=$true)]
-        [string]$PBIPFilePath,
-        [Parameter(Mandatory=$true)]
-        [string]$ReportName,
-        [Parameter(Mandatory=$true)]
+function Deploy-PBIP {
+    param (
+        [string]$PBIPPath,
         [string]$WorkspaceId,
-        [Parameter(Mandatory=$true)]
-        [string]$AccessToken,
-        [string]$Takeover = "True",
-        [Parameter(Mandatory=$true)]
-        [string]$ServerName,
-        [Parameter(Mandatory=$true)]
-        [string]$DatabaseName
+        [string]$ModelName,     # semantic model name
+        [string]$ReportName     # report name
     )
-    
+
+    Write-Host "🚀 Starting deployment for: $PBIPPath to workspace: $WorkspaceId"
+
+    # ---- Pre-deployment checks ----
+    if (-not (Verify-WorkspaceAccess -WorkspaceId $WorkspaceId)) {
+        throw "❌ Workspace access verification failed"
+    }
+
+    if (-not (Validate-PBIPStructure -PBIPPath $PBIPPath)) {
+        throw "❌ PBIP structure validation failed"
+    }
+
+    Debug-PBIPContent -PBIPPath $PBIPPath
+    $preDeploymentItems = List-WorkspaceItems -WorkspaceId $WorkspaceId
+
+    $warnings = @()
+    $overallSuccess = $true
+
     try {
-        Write-Host "`n========================================="
-        Write-Host "Starting Enhanced PBIP Deployment"
-        Write-Host "Report: $ReportName"
-        Write-Host "========================================="
-        
-        # Step 1: Verify workspace access
-        Write-Host "`n--- STEP 1: WORKSPACE VERIFICATION ---"
-        $workspaceAccessible = Verify-WorkspaceAccess -WorkspaceId $WorkspaceId -AccessToken $AccessToken
-        if (-not $workspaceAccessible) {
-            throw "Cannot access target workspace"
+        # ---- Deploy Semantic Model ----
+        Write-Host "`n📦 Deploying Semantic Model: $ModelName"
+        if (-not (Deploy-SemanticModel -PBIPPath $PBIPPath -WorkspaceId $WorkspaceId -ModelName $ModelName)) {
+            throw "Semantic model deployment failed"
         }
-        
-        # Step 2: List current workspace items (before deployment)
-        Write-Host "`n--- STEP 2: PRE-DEPLOYMENT INVENTORY ---"
-        $preDeploymentItems = List-WorkspaceItems -WorkspaceId $WorkspaceId -AccessToken $AccessToken
-        Write-Host "Pre-deployment: Found $($preDeploymentItems.Count) items in workspace"
-        
-        # Step 3: Validate PBIP structure and content
-        Write-Host "`n--- STEP 3: PBIP VALIDATION ---"
-        $validation = Validate-PBIPStructure -PBIPFilePath $PBIPFilePath
-        if (-not $validation.IsValid) {
-            throw "Invalid PBIP structure for: $ReportName"
+
+        if (-not (Wait-ForDeploymentCompletion -WorkspaceId $WorkspaceId -ItemName $ModelName -MaxWaitMinutes 3)) {
+            throw "Semantic model deployment did not complete in time"
         }
-        
-        Debug-PBIPContent -PBIPFilePath $PBIPFilePath
-        
-        # Step 4: Deploy Semantic Model
-        Write-Host "`n--- STEP 4: SEMANTIC MODEL DEPLOYMENT ---"
-        $semanticModelResult = Deploy-SemanticModel -SemanticModelFolder $validation.SemanticModelFolder -WorkspaceId $WorkspaceId -AccessToken $AccessToken -ModelName $ReportName -ServerName $ServerName -DatabaseName $DatabaseName
-        
-        if (-not $semanticModelResult.Success) {
-            throw "Semantic model deployment failed: $($semanticModelResult.Error)"
+
+        if (-not (Verify-ItemDeployment -WorkspaceId $WorkspaceId -ItemName $ModelName)) {
+            throw "Semantic model verification failed"
         }
-        
-        if ($semanticModelResult.Warning) {
-            Write-Warning "Semantic model warning: $($semanticModelResult.Warning)"
-        }
-        
-        $semanticModelId = $semanticModelResult.ModelId
-        Write-Host "Semantic model result - ID: $semanticModelId"
-        
-        # Step 5: Wait for semantic model to appear
-        Write-Host "`n--- STEP 5: SEMANTIC MODEL VERIFICATION ---"
-        $semanticModelReady = Wait-ForDeploymentCompletion -WorkspaceId $WorkspaceId -AccessToken $AccessToken -ItemName $ReportName -ItemType "SemanticModel" -MaxWaitMinutes 3
-        
-        if (-not $semanticModelReady) {
-            Write-Warning "Semantic model not found after deployment, but continuing..."
-        }
-        
-        # Step 6: Deploy Report
-        Write-Host "`n--- STEP 6: REPORT DEPLOYMENT ---"
-        $reportSuccess = Deploy-Report -ReportFolder $validation.ReportFolder -WorkspaceId $WorkspaceId -AccessToken $AccessToken -ReportName $ReportName -SemanticModelId $semanticModelId
-        
-        if (-not $reportSuccess) {
+
+        # ---- Deploy Report ----
+        Write-Host "`n📊 Deploying Report: $ReportName"
+        if (-not (Deploy-Report -PBIPPath $PBIPPath -WorkspaceId $WorkspaceId -ReportName $ReportName)) {
             throw "Report deployment failed"
         }
-        
-        # Step 7: Wait for report to appear
-        Write-Host "`n--- STEP 7: REPORT VERIFICATION ---"
-        $reportReady = Wait-ForDeploymentCompletion -WorkspaceId $WorkspaceId -AccessToken $AccessToken -ItemName $ReportName -ItemType "Report" -MaxWaitMinutes 3
-        
-        # Step 8: Final verification
-        Write-Host "`n--- STEP 8: FINAL VERIFICATION ---"
-        $verificationResult = Verify-DeploymentResult -WorkspaceId $WorkspaceId -AccessToken $AccessToken -ReportName $ReportName -SemanticModelName $ReportName
-        
-        # Step 9: Post-deployment inventory
-        Write-Host "`n--- STEP 9: POST-DEPLOYMENT INVENTORY ---"
-        $postDeploymentItems = List-WorkspaceItems -WorkspaceId $WorkspaceId -AccessToken $AccessToken
-        Write-Host "Post-deployment: Found $($postDeploymentItems.Count) items in workspace"
-        
-        $newItems = $postDeploymentItems.Count - $preDeploymentItems.Count
-        if ($newItems -gt 0) {
-            Write-Host "✓ Added $newItems new item(s) to workspace"
-        } else {
-            Write-Warning "⚠️ No new items detected in workspace"
+
+        if (-not (Wait-ForDeploymentCompletion -WorkspaceId $WorkspaceId -ItemName $ReportName -MaxWaitMinutes 3)) {
+            throw "Report deployment did not complete in time"
         }
-        
-        # Final assessment
-        Write-Host "`n========================================="
-        Write-Host "DEPLOYMENT SUMMARY"
-        Write-Host "========================================="
-        
-        $overallSuccess = $verificationResult.SemanticModelFound -and $verificationResult.ReportFound
-        
-        if ($overallSuccess) {
-            Write-Host "✓ DEPLOYMENT SUCCESSFUL"
-            Write-Host "  - Semantic Model: ✓ Found"
-            Write-Host "  - Report: ✓ Found"
-            Write-Host "  - Semantic Model ID: $($verificationResult.SemanticModelId)"
-            Write-Host "  - Report ID: $($verificationResult.ReportId)"
-        } else {
-            Write-Warning "⚠️ DEPLOYMENT ISSUES DETECTED"
-            Write-Host "  - Semantic Model: $(if ($verificationResult.SemanticModelFound) { '✓ Found' } else { '❌ Missing' })"
-            Write-Host "  - Report: $(if ($verificationResult.ReportFound) { '✓ Found' } else { '❌ Missing' })"
-            
-            # Provide troubleshooting guidance
-            Write-Host "`n--- TROUBLESHOOTING GUIDANCE ---"
-            if (-not $verificationResult.SemanticModelFound) {
-                Write-Host "• Semantic model missing - check permissions and API scope"
-            }
-            if (-not $verificationResult.ReportFound) {
-                Write-Host "• Report missing - may be deployment timing or API sync issue"
-                Write-Host "• Try checking the workspace manually in a few minutes"
-            }
+
+        if (-not (Verify-ItemDeployment -WorkspaceId $WorkspaceId -ItemName $ReportName)) {
+            throw "Report verification failed"
         }
-        
-        Write-Host "========================================="
-        
-        return $overallSuccess
-        
-    } catch {
-        Write-Error "Enhanced PBIP deployment failed for $ReportName : $_"
-        
-        # Additional debugging on failure
-        Write-Host "`n--- FAILURE ANALYSIS ---"
-        try {
-            List-WorkspaceItems -WorkspaceId $WorkspaceId -AccessToken $AccessToken
-        } catch {
-            Write-Warning "Could not list workspace items for failure analysis"
+
+        # ---- Post-deployment verification ----
+        $postDeploymentItems = List-WorkspaceItems -WorkspaceId $WorkspaceId
+        $newItemsCount = $postDeploymentItems.Count - $preDeploymentItems.Count
+
+        if ($newItemsCount -gt 0) {
+            Write-Host "✅ Deployment successful - $newItemsCount new items detected"
         }
-        
-        return $false
+        else {
+            $msg = "⚠️ No new items detected - deployment may have been an update"
+            Write-Warning $msg
+            $warnings += $msg
+        }
+
+        if (-not (Verify-DeploymentResult -WorkspaceId $WorkspaceId -PreItems $preDeploymentItems -PostItems $postDeploymentItems)) {
+            throw "Final deployment verification failed"
+        }
+    }
+    catch {
+        Write-Host "`n❌ Deployment failed: $($_.Exception.Message)"
+        $overallSuccess = $false
+        # show workspace items for analysis
+        List-WorkspaceItems -WorkspaceId $WorkspaceId
+    }
+
+    # ---- Return result ----
+    return [PSCustomObject]@{
+        Success      = $overallSuccess
+        ModelName    = $ModelName
+        ReportName   = $ReportName
+        Warnings     = $warnings
     }
 }
+
 
 # ===============================
 # MAIN EXECUTION LOGIC
