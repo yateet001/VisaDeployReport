@@ -42,7 +42,7 @@ stages:
   - stage: Approval_Stage
     jobs:
       - deployment: Approval
-        environment: UDP-${{ parameters.Deployment_Environment }}-Deploy
+        environment: ${{ parameters.Deployment_Environment }}
         strategy:
           runOnce:
             deploy:
