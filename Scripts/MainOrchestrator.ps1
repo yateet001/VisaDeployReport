@@ -512,8 +512,10 @@ function Deploy-SemanticModel {
         Write-Host "Triggering refresh for semantic model (ID: $deployedModelId)..."
         $refreshUrl = "https://api.powerbi.com/v1.0/myorg/groups/$WorkspaceId/datasets/$deployedModelId/refreshes"
         $refreshPayload = @{} | ConvertTo-Json
-        $refreshHeaders = $headers.Clone()
-        $refreshHeaders["Content-Type"] = "application/json"
+        $refreshHeaders = @{
+             "Authorization" = "Bearer $AccessToken"
+             "Content-Type" = "application/json"
+        }
 
         try {
             Invoke-RestMethod -Uri $refreshUrl -Method Post -Headers $refreshHeaders -Body $refreshPayload
