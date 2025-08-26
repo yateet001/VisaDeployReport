@@ -465,136 +465,62 @@ function Deploy-SemanticModel {
 
         $headers = @{ "Authorization" = "Bearer $AccessToken"; "Content-Type" = "application/json" }
 
-        # 🔑 Step 1: Check if model exists already
+        # 🔑 Step 1: Always check for existing model
         $listUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels"
         $listResponse = Invoke-RestMethod -Uri $listUrl -Method Get -Headers $headers
         $existingModel = $listResponse.value | Where-Object { $_.displayName -eq $ModelName } | Select-Object -First 1
 
-        $modelId = $null
-
-        if ($existingModel) {
-            Write-Host "Semantic model already exists (ID: $($existingModel.id)) → updating definition..."
-            $updateUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels/$($existingModel.id)/updateDefinition"
-            $updatePayload = @{ definition = @{ parts = $smParts } } | ConvertTo-Json -Depth 50
-            Invoke-RestMethod -Uri $updateUrl -Method Post -Body $updatePayload -Headers $headers
-            Write-Host "✓ Semantic model updated successfully"
-            $modelId = $existingModel.id
-        }
-        else {
-            Write-Host "No existing model found → creating new semantic model..."
-            $deploymentPayload = @{
-                displayName = $ModelName
-                description = "Semantic model deployed from PBIP: $ModelName"
-                definition = @{ parts = $smParts }
-            } | ConvertTo-Json -Depth 50
-
-            $deployUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels"
-            $createResp = Invoke-RestMethod -Uri $deployUrl -Method Post -Body $deploymentPayload -Headers $headers
-            Write-Host "✓ Semantic model created successfully (ID: $($createResp.id))"
-            $modelId = $createResp.id
+        if (-not $existingModel) {
+            throw "Semantic model '$ModelName' not found in workspace $WorkspaceId"
         }
 
-               # ===================== REPLACE FROM HERE =====================
-        # 🔄 Step 2: Trigger Refresh via Power BI REST API
-        if ($modelId) {
+        Write-Host "Semantic model exists (ID: $($existingModel.id)) → updating definition..."
+        $updateUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels/$($existingModel.id)/updateDefinition"
+        $updatePayload = @{ definition = @{ parts = $smParts } } | ConvertTo-Json -Depth 50
+        Invoke-RestMethod -Uri $updateUrl -Method Post -Body $updatePayload -Headers $headers
+        Write-Host "✓ Semantic model updated successfully"
 
-    function Resolve-PowerBIDatasetId {
-        param(
-            [string]$WorkspaceId,
-            [string]$ModelId,
-            [string]$ModelName,
-            [hashtable]$Headers
-        )
-        $url = "https://api.powerbi.com/v1.0/myorg/groups/$WorkspaceId/datasets"
-        $list = Invoke-RestMethod -Uri $url -Method Get -Headers $Headers
-        $dataset = $null
-        if ($list -and $list.value) {
-            $dataset = $list.value | Where-Object { $_.id -eq $ModelId } | Select-Object -First 1
-            if (-not $dataset -and $ModelName) {
-                $dataset = $list.value | Where-Object { $_.name -eq $ModelName } | Select-Object -First 1
+        # 🔄 Step 2: Trigger refresh
+        $refreshUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels/$($existingModel.id)/refreshes"
+        Write-Host "Triggering refresh for semantic model (ID: $($existingModel.id))..."
+        $refreshResponse = Invoke-RestMethod -Uri $refreshUrl -Method Post -Headers $headers
+        $refreshId = $refreshResponse.id
+        Write-Host "✓ Refresh triggered (Refresh ID: $refreshId)"
+
+        # 🔍 Step 3: Poll for refresh status
+        $statusUrl = "$refreshUrl/$refreshId"
+        $maxWaitMinutes = 10
+        $sleepSeconds = 15
+        $elapsed = 0
+
+        while ($elapsed -lt ($maxWaitMinutes * 60)) {
+            Start-Sleep -Seconds $sleepSeconds
+            $elapsed += $sleepSeconds
+
+            $statusResponse = Invoke-RestMethod -Uri $statusUrl -Method Get -Headers $headers
+            $status = $statusResponse.status
+
+            Write-Host "⏳ Refresh status: $status (elapsed ${elapsed}s)"
+
+            if ($status -eq "Completed") {
+                Write-Host "✅ Refresh completed successfully"
+                return @{ Success = $true; ModelId = $existingModel.id; RefreshId = $refreshId; RefreshStatus = "Completed" }
+            }
+            elseif ($status -eq "Failed") {
+                Write-Host "❌ Refresh failed"
+                return @{ Success = $false; ModelId = $existingModel.id; RefreshId = $refreshId; RefreshStatus = "Failed" }
             }
         }
-        return $dataset?.id
-    }
 
-    $pbiHeaders = @{
-        "Authorization" = "Bearer $AccessToken"
-        "Content-Type"  = "application/json"
-        "Accept"        = "application/json"
-    }
-
-    Write-Host "Resolving Power BI dataset for model '$ModelName' (modelId: $modelId) ..."
-    Start-Sleep -Seconds 20
-
-    $datasetId = Resolve-PowerBIDatasetId -WorkspaceId $WorkspaceId -ModelId $modelId -ModelName $ModelName -Headers $pbiHeaders
-    if (-not $datasetId) {
-        Write-Warning "Dataset not found yet, retrying in 15s..."
-        Start-Sleep -Seconds 15
-        $datasetId = Resolve-PowerBIDatasetId -WorkspaceId $WorkspaceId -ModelId $modelId -ModelName $ModelName -Headers $pbiHeaders
-    }
-    if (-not $datasetId) {
-        throw "Power BI dataset not found in workspace '$WorkspaceId' for modelId '$modelId' / name '$ModelName'."
-    }
-
-    Write-Host "Triggering refresh for datasetId: $datasetId ..."
-    $refreshUrl = "https://api.powerbi.com/v1.0/myorg/groups/$WorkspaceId/datasets/$datasetId/refreshes"
-
-    try {
-        # Enhanced refresh (model-based datasets)
-        $enhancedPayload = @{ type = "Full" } | ConvertTo-Json -Depth 5
-        $resp = Invoke-RestMethod -Uri $refreshUrl -Method Post -Headers $pbiHeaders -Body $enhancedPayload
-        Write-Host "✓ Enhanced refresh triggered (Refresh ID: $($resp.id))"
-    }
-    catch {
-    # Extract raw body safely
-    $rawBody = $null
-    if ($_.ErrorDetails -and $_.ErrorDetails.Message) {
-        $rawBody = $_.ErrorDetails.Message
-    }
-    elseif ($_.Exception -and $_.Exception.Response) {
-        try {
-            $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
-            $rawBody = $reader.ReadToEnd()
-            $reader.Dispose()
-        } catch {}
-    }
-
-    $errCode = $null
-    $errMsg  = $null
-    if ($rawBody) {
-        try {
-            $j = $rawBody | ConvertFrom-Json -ErrorAction Stop
-            if ($j -and $j.error) {
-                $errCode = $j.error.code
-                $errMsg  = $j.error.message
-            }
-        } catch {}
-    }
-
-    if ($errCode -eq 'InvalidRequest' -and $errMsg -like '*Model-based*') {
-        Write-Warning "Enhanced refresh not supported → falling back to classic refresh."
-
-        # Classic refresh (empty body, because notifyOption is not allowed for app tokens)
-        $resp2 = Invoke-RestMethod -Uri $refreshUrl -Method Post -Headers $pbiHeaders
-        Write-Host "✓ Classic refresh triggered"
-    }
-    else {
-        throw "Refresh failed: $rawBody"
-    }
-}
-
-
-    return @{ Success = $true; ModelId = $modelId }
-}
-
-
-        return @{ Success = $true; ModelId = $modelId }
+        Write-Host "⚠️ Refresh timed out after $maxWaitMinutes minutes"
+        return @{ Success = $false; ModelId = $existingModel.id; RefreshId = $refreshId; RefreshStatus = "Timeout" }
 
     } catch {
-        Write-Error "Failed to deploy semantic model: $($_)"
+        Write-Error "Failed to deploy/refresh semantic model: $($_)"
         return @{ Success = $false; ModelId = $null; Error = "$($_)" }
     }
 }
+
 
 
 function Deploy-Report {
