@@ -476,7 +476,8 @@ function Deploy-SemanticModel {
             $updatePayload = @{ definition = @{ parts = $smParts } } | ConvertTo-Json -Depth 50
             Invoke-RestMethod -Uri $updateUrl -Method Post -Body $updatePayload -Headers $headers
             Write-Host "✓ Semantic model updated successfully"
-            return @{ Success = $true; ModelId = $existingModel.id }
+            updatedModelId = $existingModel.id
+            # return @{ Success = $true; ModelId = $existingModel.id }
         }
         else {
             Write-Host "No existing model found → creating new semantic model..."
@@ -489,13 +490,30 @@ function Deploy-SemanticModel {
             $deployUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels"
             $createResp = Invoke-RestMethod -Uri $deployUrl -Method Post -Body $deploymentPayload -Headers $headers
             Write-Host "✓ Semantic model created successfully (ID: $($createResp.id))"
-            return @{ Success = $true; ModelId = $createResp.id }
+            createdModelId = $createResp.id
+            # return @{ Success = $true; ModelId = $createResp.id }
         }
 
     } catch {
         Write-Error "Failed to deploy semantic model: $($_)"
         return @{ Success = $false; ModelId = $null; Error = "$($_)" }
     }
+    # 🔄 Step 2: Trigger refresh (Fabric API)
+        $refreshUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/items/$($existingModel.id)/refresh"
+        Write-Host "Triggering refresh for semantic model (ID: $($existingModel.id))..."
+        Write-Host "Refresh URL: $refreshUrl"
+        Invoke-RestMethod -Uri $refreshUrl -Method Post -Headers $headers
+        Write-Host "✓ Refresh triggered (Fabric PBIP model)"
+
+        # ✅ Return JSON with id + name
+        $output = @{
+            id   = $existingModel.id
+            name = $existingModel.displayName
+            refreshStatus = "Triggered"
+        } | ConvertTo-Json -Depth 5
+        Write-Output $output
+
+        return @{ Success = $true; ModelId = if($existingModel.id){ $existingModel.id } else { $createResp.id }; RefreshedStatus = "Triggered"}
 }
 
 
