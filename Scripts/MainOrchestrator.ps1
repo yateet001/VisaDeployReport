@@ -412,46 +412,30 @@ function Deploy-SemanticModel {
         [Parameter(Mandatory=$true)]
         [string]$DatabaseName
     )
-    
+
     try {
         Write-Host "Deploying semantic model: $ModelName"
-        
+
         $modelBimFile = Get-ChildItem -Path $SemanticModelFolder -Filter "model.bim" -Recurse | Select-Object -First 1
-        if (-not $modelBimFile) {
-            throw "model.bim file not found in semantic model folder"
-        }
+        if (-not $modelBimFile) { throw "model.bim file not found in semantic model folder" }
 
         $modelDefinitionRaw = Get-Content $modelBimFile.FullName -Raw
-        Write-Host "Model definition loaded: $($modelDefinitionRaw.Length) characters"
+        $modelJson = $modelDefinitionRaw | ConvertFrom-Json
 
-        try {
-            $modelJson = $modelDefinitionRaw | ConvertFrom-Json
-        } catch {
-            throw "Failed to parse model.bim JSON: $($_)"
-        }
-
+        # Connection switching
+        $pattern = 'Sql\.Database\(".*?"\s*,\s*".*?"(?:\s*,\s*\[.*?\])?\)'
+        $replacement = 'Sql.Database("' + $ServerName + '", "' + $DatabaseName + '")'
         $updatesApplied = 0
-        if ($modelJson.model -and $modelJson.model.tables) {
-            foreach ($table in $modelJson.model.tables) {
-                if ($table.partitions) {
-                    foreach ($partition in $table.partitions) {
-                        if ($partition.source -and $partition.source.type -eq 'm' -and $partition.source.expression) {
-                            # More flexible regex for Sql.Database
-                            $pattern = 'Sql\.Database\(".*?"\s*,\s*".*?"(?:\s*,\s*\[.*?\])?\)'
-                            $replacement = 'Sql.Database("' + $ServerName + '", "' + $DatabaseName + '")'
 
-                            if ($partition.source.expression -is [System.Array]) {
-                                $newExpr = @()
-                                foreach ($line in $partition.source.expression) {
-                                    $newExpr += ($line -replace $pattern, $replacement)
-                                }
-                                $partition.source.expression = $newExpr
-                                $updatesApplied++
-                            } elseif ($partition.source.expression -is [string]) {
-                                $partition.source.expression = ($partition.source.expression -replace $pattern, $replacement)
-                                $updatesApplied++
-                            }
-                        }
+        foreach ($table in $modelJson.model.tables) {
+            foreach ($partition in $table.partitions) {
+                if ($partition.source -and $partition.source.type -eq 'm' -and $partition.source.expression) {
+                    if ($partition.source.expression -is [System.Array]) {
+                        $partition.source.expression = $partition.source.expression | ForEach-Object { $_ -replace $pattern, $replacement }
+                        $updatesApplied++
+                    } elseif ($partition.source.expression -is [string]) {
+                        $partition.source.expression = $partition.source.expression -replace $pattern, $replacement
+                        $updatesApplied++
                     }
                 }
             }
@@ -459,13 +443,11 @@ function Deploy-SemanticModel {
 
         if ($updatesApplied -gt 0) {
             Write-Host "✓ Connection switching applied to $updatesApplied partition(s)"
-        } else {
-            Write-Warning "No Sql.Database() expressions found to update in model.bim"
         }
 
         $modelDefinition = $modelJson | ConvertTo-Json -Depth 100
-        
-        # Build semantic model definition parts
+
+        # Build parts
         $smParts = @()
         $smDir = Split-Path $modelBimFile.FullName -Parent
         $smParts += @{
@@ -481,88 +463,41 @@ function Deploy-SemanticModel {
             }
         }
 
-        $deploymentPayload = @{
-            displayName = $ModelName
-            description = "Semantic model deployed from PBIP: $ModelName"
-            definition = @{ parts = $smParts }
-        } | ConvertTo-Json -Depth 50
-        
-        $deployUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels"
-        $headers = @{ 
-            "Authorization" = "Bearer $AccessToken"
-            "Content-Type" = "application/json"
-        }
-        
-        try {
-            $createResp = Invoke-WebRequest -Uri $deployUrl -Method Post -Body $deploymentPayload -Headers $headers -ContentType 'application/json'
-            $modelId = $null
-            $content = $null
-            try { $content = $createResp.Content | ConvertFrom-Json } catch {}
-            if ($content -and $content.id) { $modelId = $content.id }
-            if (-not $modelId) {
-                $opLocation = $createResp.Headers['Operation-Location']
-                if (-not $opLocation) { $opLocation = $createResp.Headers['operation-location'] }
-                if ($opLocation) {
-                    Write-Host "Waiting for semantic model creation operation to complete..."
-                    $opOk = Wait-FabricOperationCompletion -OperationStatusUrl $opLocation -AccessToken $AccessToken -MaxWaitSeconds 180
-                    if (-not $opOk) { throw "Semantic model creation operation did not complete successfully" }
-                }
-                $listUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels"
-                $listResponse = Invoke-RestMethod -Uri $listUrl -Method Get -Headers $headers
-                $existing = $listResponse.value | Where-Object { $_.displayName -eq $ModelName } | Select-Object -First 1
-                if ($existing) { $modelId = $existing.id }
-            }
-            if (-not $modelId) { throw "Semantic model id could not be determined after creation" }
+        $headers = @{ "Authorization" = "Bearer $AccessToken"; "Content-Type" = "application/json" }
 
-            Write-Host "✓ Semantic model deployed successfully"
-            return @{ Success = $true; ModelId = $modelId }
-        } catch {
-            $statusCode = $null
-            $errBody = $null
-            try { $statusCode = $_.Exception.Response.StatusCode } catch {}
-            try {
-                $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
-                $errBody = $reader.ReadToEnd()
-            } catch {}
-            
-            if ($statusCode -eq 409) {
-                Write-Host "Semantic model already exists, attempting to find existing model..."
-                try {
-                    $listUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels"
-                    $listResponse = Invoke-RestMethod -Uri $listUrl -Method Get -Headers $headers
-                    $existingModel = $listResponse.value | Where-Object { $_.displayName -eq $ModelName }
-                    
-                    if ($existingModel) {
-                        Write-Host "Found existing model with ID: $($existingModel.id)"
-                        $updateUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels/$($existingModel.id)/updateDefinition"
-                        $updatePayload = @{ definition = @{ parts = $smParts } } | ConvertTo-Json -Depth 50
-                        try {
-                            $updateResponse = Invoke-RestMethod -Uri $updateUrl -Method Post -Body $updatePayload -Headers $headers
-                            Write-Host "✓ Semantic model updated successfully"
-                            return @{ Success = $true; ModelId = $existingModel.id }
-                        } catch {
-                            Write-Warning "Failed to update semantic model definition: $($_)"
-                            return @{ Success = $true; ModelId = $existingModel.id; Warning = "Model exists but update failed" }
-                        }
-                    } else {
-                        Write-Warning "Could not find existing semantic model with name: $ModelName"
-                        return @{ Success = $false; ModelId = $null; Error = "Model conflict but could not locate existing model" }
-                    }
-                } catch {
-                    Write-Warning "Failed to list existing semantic models: $($_)"
-                    return @{ Success = $false; ModelId = $null; Error = "Model conflict and failed to resolve" }
-                }
-            } else {
-                Write-Error "Semantic model creation failed. Status: $statusCode Body: $errBody"
-                return @{ Success = $false; ModelId = $null; Error = "Semantic model creation failed. $($_)" }
-            }
+        # 🔑 Step 1: Check if model exists already
+        $listUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels"
+        $listResponse = Invoke-RestMethod -Uri $listUrl -Method Get -Headers $headers
+        $existingModel = $listResponse.value | Where-Object { $_.displayName -eq $ModelName } | Select-Object -First 1
+
+        if ($existingModel) {
+            Write-Host "Semantic model already exists (ID: $($existingModel.id)) → updating definition..."
+            $updateUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels/$($existingModel.id)/updateDefinition"
+            $updatePayload = @{ definition = @{ parts = $smParts } } | ConvertTo-Json -Depth 50
+            Invoke-RestMethod -Uri $updateUrl -Method Post -Body $updatePayload -Headers $headers
+            Write-Host "✓ Semantic model updated successfully"
+            return @{ Success = $true; ModelId = $existingModel.id }
         }
-        
+        else {
+            Write-Host "No existing model found → creating new semantic model..."
+            $deploymentPayload = @{
+                displayName = $ModelName
+                description = "Semantic model deployed from PBIP: $ModelName"
+                definition = @{ parts = $smParts }
+            } | ConvertTo-Json -Depth 50
+
+            $deployUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels"
+            $createResp = Invoke-RestMethod -Uri $deployUrl -Method Post -Body $deploymentPayload -Headers $headers
+            Write-Host "✓ Semantic model created successfully (ID: $($createResp.id))"
+            return @{ Success = $true; ModelId = $createResp.id }
+        }
+
     } catch {
         Write-Error "Failed to deploy semantic model: $($_)"
         return @{ Success = $false; ModelId = $null; Error = "$($_)" }
     }
 }
+
 
 
 function Deploy-Report {
