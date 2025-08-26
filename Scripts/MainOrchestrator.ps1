@@ -503,14 +503,14 @@ function Deploy-SemanticModel {
         return @{ Success = $false; deployedModelId = $null; Error = "$($_)" }
     }
     # 🔄 Step 2: Trigger refresh (Fabric API)
-        $refreshUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/items/$deployedModelId/refresh"
+        $refreshUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels/$deployedModelId/refresh"
         Write-Host "Triggering refresh for semantic model (ID: $deployedModelId)..."
         Write-Host "Refresh URL: $refreshUrl"
         Invoke-RestMethod -Uri $refreshUrl -Method Post -Headers $headers
         Write-Host "✓ Refresh triggered (Fabric PBIP model)"
 
         # ✅ Return JSON with id + name
-        return @{
+        $output = @{
             Success       = $true
             ModelId       = $deployedModelId
             Name          = $deployedModelName
