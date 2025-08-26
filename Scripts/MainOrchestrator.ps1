@@ -412,6 +412,8 @@ function Deploy-SemanticModel {
         [Parameter(Mandatory=$true)]
         [string]$DatabaseName
     )
+    $deployedModelId   = $null
+    $deployedModelName = $null
 
     try {
         Write-Host "Deploying semantic model: $ModelName"
