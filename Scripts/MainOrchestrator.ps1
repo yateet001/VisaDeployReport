@@ -503,7 +503,7 @@ function Deploy-SemanticModel {
         return @{ Success = $false; deployedModelId = $null; Error = "$($_)" }
     }
     # 🔄 Step 2: Trigger refresh (Fabric API)
-        $refreshUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels/$deployedModelId/refresh"
+        $refreshUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels/$deployedModelId/refreshes"
         Write-Host "Triggering refresh for semantic model (ID: $deployedModelId)..."
         Write-Host "Refresh URL: $refreshUrl"
         Invoke-RestMethod -Uri $refreshUrl -Method Post -Headers $headers
