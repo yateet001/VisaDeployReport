@@ -465,10 +465,12 @@ function Deploy-SemanticModel {
 
         $headers = @{ "Authorization" = "Bearer $AccessToken"; "Content-Type" = "application/json" }
 
-        # 🔑 Step 1: Check if model exists already
+        # Step 1: Check if model exists
         $listUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels"
         $listResponse = Invoke-RestMethod -Uri $listUrl -Method Get -Headers $headers
         $existingModel = $listResponse.value | Where-Object { $_.displayName -eq $ModelName } | Select-Object -First 1
+
+        $modelId = $null
 
         if ($existingModel) {
             Write-Host "Semantic model already exists (ID: $($existingModel.id)) → updating definition..."
@@ -476,7 +478,7 @@ function Deploy-SemanticModel {
             $updatePayload = @{ definition = @{ parts = $smParts } } | ConvertTo-Json -Depth 50
             Invoke-RestMethod -Uri $updateUrl -Method Post -Body $updatePayload -Headers $headers
             Write-Host "✓ Semantic model updated successfully"
-            return @{ Success = $true; ModelId = $existingModel.id }
+            $modelId = $existingModel.id
         }
         else {
             Write-Host "No existing model found → creating new semantic model..."
@@ -489,14 +491,25 @@ function Deploy-SemanticModel {
             $deployUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels"
             $createResp = Invoke-RestMethod -Uri $deployUrl -Method Post -Body $deploymentPayload -Headers $headers
             Write-Host "✓ Semantic model created successfully (ID: $($createResp.id))"
-            return @{ Success = $true; ModelId = $createResp.id }
+            $modelId = $createResp.id
         }
+
+        # Step 2: Trigger Refresh automatically
+        if ($modelId) {
+            $refreshUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels/$modelId/refreshes"
+            Write-Host "Triggering refresh for model $ModelName (ID: $modelId)..."
+            $refreshResp = Invoke-RestMethod -Uri $refreshUrl -Method Post -Headers $headers -Body (@{} | ConvertTo-Json)
+            Write-Host "✓ Refresh started successfully"
+        }
+
+        return @{ Success = $true; ModelId = $modelId; RefreshTriggered = $true }
 
     } catch {
         Write-Error "Failed to deploy semantic model: $($_)"
         return @{ Success = $false; ModelId = $null; Error = "$($_)" }
     }
 }
+
 
 
 
