@@ -486,14 +486,14 @@ function Deploy-SemanticModel {
         # Invoke-RestMethod -Uri $takeoverUrl -Method Post -Headers $headers
         # Write-Host "✓ Ownership taken successfully"
 
-        # 🔄 Step 3: Trigger refresh
-        $refreshUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels/$($existingModel.id)/refreshes"
+        # 🔄 Step 3: Trigger refresh (Power BI REST API, not Fabric API)
+        $refreshUrl = "https://api.powerbi.com/v1.0/myorg/groups/$WorkspaceId/datasets/$($existingModel.id)/refreshes"
         Write-Host "Triggering refresh for semantic model (ID: $($existingModel.id))..."
         $refreshResponse = Invoke-RestMethod -Uri $refreshUrl -Method Post -Headers $headers
         $refreshId = $refreshResponse.id
         Write-Host "✓ Refresh triggered (Refresh ID: $refreshId)"
 
-        # 🔍 Step 4: Poll for refresh status
+        # 🔍 Step 4: Poll refresh status
         $statusUrl = "$refreshUrl/$refreshId"
         $maxWaitMinutes = 10
         $sleepSeconds = 15
