@@ -465,7 +465,7 @@ function Deploy-SemanticModel {
 
         $headers = @{ "Authorization" = "Bearer $AccessToken"; "Content-Type" = "application/json" }
 
-        # Step 1: Check if model exists
+        # 🔑 Step 1: Check if model exists already
         $listUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels"
         $listResponse = Invoke-RestMethod -Uri $listUrl -Method Get -Headers $headers
         $existingModel = $listResponse.value | Where-Object { $_.displayName -eq $ModelName } | Select-Object -First 1
@@ -494,28 +494,22 @@ function Deploy-SemanticModel {
             $modelId = $createResp.id
         }
 
-        # Step 2: Trigger Refresh automatically
-        # 🔄 Trigger refresh using latest model ID
-$latestModelId = (Invoke-RestMethod -Uri "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels" -Headers $headers).value | Where-Object { $_.displayName -eq $ModelName } | Select-Object -ExpandProperty id -First 1
+        # 🔄 Step 2: Trigger Refresh on the NEW modelId
+        if ($modelId) {
+            Write-Host "Triggering refresh for model ID: $modelId ..."
+            $refreshUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels/$modelId/refreshes"
+            $refreshPayload = @{ type = "Full" } | ConvertTo-Json -Depth 5
+            Invoke-RestMethod -Uri $refreshUrl -Method Post -Headers $headers -Body $refreshPayload
+            Write-Host "✓ Refresh triggered successfully"
+        }
 
-if ($latestModelId) {
-    Write-Host "Triggering refresh for model $ModelName (ID: $latestModelId)..."
-    Invoke-RestMethod -Uri "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels/$latestModelId/refreshes" -Method Post -Headers $headers -Body (@{ type="Full" } | ConvertTo-Json) -ContentType "application/json"
-    Write-Host "✓ Refresh started successfully"
-} else {
-    Write-Warning "⚠ Semantic model '$ModelName' not found. Skipping refresh."
-}
-
-
-        return @{ Success = $true; ModelId = $modelId; RefreshTriggered = $true }
+        return @{ Success = $true; ModelId = $modelId }
 
     } catch {
         Write-Error "Failed to deploy semantic model: $($_)"
         return @{ Success = $false; ModelId = $null; Error = "$($_)" }
     }
 }
-
-
 
 
 function Deploy-Report {
