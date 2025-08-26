@@ -495,12 +495,17 @@ function Deploy-SemanticModel {
         }
 
         # Step 2: Trigger Refresh automatically
-        if ($modelId) {
-            $refreshUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels/$modelId/refreshes"
-            Write-Host "Triggering refresh for model $ModelName (ID: $modelId)..."
-            $refreshResp = Invoke-RestMethod -Uri $refreshUrl -Method Post -Headers $headers -Body (@{} | ConvertTo-Json)
-            Write-Host "✓ Refresh started successfully"
-        }
+        # 🔄 Trigger refresh using latest model ID
+$latestModelId = (Invoke-RestMethod -Uri "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels" -Headers $headers).value | Where-Object { $_.displayName -eq $ModelName } | Select-Object -ExpandProperty id -First 1
+
+if ($latestModelId) {
+    Write-Host "Triggering refresh for model $ModelName (ID: $latestModelId)..."
+    Invoke-RestMethod -Uri "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels/$latestModelId/refreshes" -Method Post -Headers $headers -Body (@{ type="Full" } | ConvertTo-Json) -ContentType "application/json"
+    Write-Host "✓ Refresh started successfully"
+} else {
+    Write-Warning "⚠ Semantic model '$ModelName' not found. Skipping refresh."
+}
+
 
         return @{ Success = $true; ModelId = $modelId; RefreshTriggered = $true }
 
