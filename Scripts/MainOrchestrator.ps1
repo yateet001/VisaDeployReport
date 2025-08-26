@@ -478,7 +478,7 @@ function Deploy-SemanticModel {
             $updatePayload = @{ definition = @{ parts = $smParts } } | ConvertTo-Json -Depth 50
             Invoke-RestMethod -Uri $updateUrl -Method Post -Body $updatePayload -Headers $headers
             Write-Host "✓ Semantic model updated successfully"
-            $deployedModelId = $existingModel.id
+            $deployedModelId = $existingModel.datasets[0].id
             $deployedModelName = $existingModel.displayName
             # return @{ Success = $true; ModelId = $existingModel.id }
         }
