@@ -498,11 +498,11 @@ function Deploy-SemanticModel {
 
     } catch {
         Write-Error "Failed to deploy semantic model: $($_)"
-        return @{ Success = $false; ModelId = $null; Error = "$($_)" }
+        return @{ Success = $false; deployedModelId = $null; Error = "$($_)" }
     }
     # 🔄 Step 2: Trigger refresh (Fabric API)
-        $refreshUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/items/$($existingModel.id)/refresh"
-        Write-Host "Triggering refresh for semantic model (ID: $($existingModel.id))..."
+        $refreshUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/items/$deployedModelId/refresh"
+        Write-Host "Triggering refresh for semantic model (ID: $deployedModelId)..."
         Write-Host "Refresh URL: $refreshUrl"
         Invoke-RestMethod -Uri $refreshUrl -Method Post -Headers $headers
         Write-Host "✓ Refresh triggered (Fabric PBIP model)"
