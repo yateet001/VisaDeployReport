@@ -478,8 +478,8 @@ function Deploy-SemanticModel {
             $updatePayload = @{ definition = @{ parts = $smParts } } | ConvertTo-Json -Depth 50
             Invoke-RestMethod -Uri $updateUrl -Method Post -Body $updatePayload -Headers $headers
             Write-Host "✓ Semantic model updated successfully"
-            deployedModelId = $existingModel.id
-            deployedModelName = $existingModel.displayName
+            $deployedModelId = $existingModel.id
+            $deployedModelName = $existingModel.displayName
             # return @{ Success = $true; ModelId = $existingModel.id }
         }
         else {
@@ -493,8 +493,8 @@ function Deploy-SemanticModel {
             $deployUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels"
             $createResp = Invoke-RestMethod -Uri $deployUrl -Method Post -Body $deploymentPayload -Headers $headers
             Write-Host "✓ Semantic model created successfully (ID: $($createResp.id))"
-            deployedModelId =  $createResp.id 
-            deployedModelName = $createResp.displayName 
+            $deployedModelId =  $createResp.id 
+            $deployedModelName = $createResp.displayName 
             # return @{ Success = $true; ModelId = $createResp.id }
         }
 
