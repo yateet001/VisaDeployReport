@@ -491,8 +491,8 @@ function Deploy-SemanticModel {
             $deployUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels"
             $createResp = Invoke-RestMethod -Uri $deployUrl -Method Post -Body $deploymentPayload -Headers $headers
             Write-Host "✓ Semantic model created successfully (ID: $($createResp.id))"
-            deployedModelId = if(deployedModelId) { deployedModelId } else { $createResp.id }
-            deployedModelName = if(deployedModelName) { deployedModelName } else { $createResp.displayName }
+            deployedModelId =  $createResp.id 
+            deployedModelName = $createResp.displayName 
             # return @{ Success = $true; ModelId = $createResp.id }
         }
 
