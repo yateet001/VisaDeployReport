@@ -503,11 +503,25 @@ function Deploy-SemanticModel {
         return @{ Success = $false; deployedModelId = $null; Error = "$($_)" }
     }
     # 🔄 Step 2: Trigger refresh (Fabric API)
-        $refreshUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels/$deployedModelId/refreshes"
+        # $refreshUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels/$deployedModelId/refreshes"
+        # Write-Host "Triggering refresh for semantic model (ID: $deployedModelId)..."
+        # Write-Host "Refresh URL: $refreshUrl"
+        # Invoke-RestMethod -Uri $refreshUrl -Method Post -Headers $headers
+        # Write-Host "✓ Refresh triggered (Fabric PBIP model)"
+
         Write-Host "Triggering refresh for semantic model (ID: $deployedModelId)..."
-        Write-Host "Refresh URL: $refreshUrl"
-        Invoke-RestMethod -Uri $refreshUrl -Method Post -Headers $headers
-        Write-Host "✓ Refresh triggered (Fabric PBIP model)"
+        $refreshUrl = "https://api.powerbi.com/v1.0/myorg/groups/$WorkspaceId/datasets/$deployedModelId/refreshes"
+        $refreshPayload = @{} | ConvertTo-Json
+        $refreshHeaders = $headers.Clone()
+        $refreshHeaders["Content-Type"] = "application/json"
+
+        try {
+            Invoke-RestMethod -Uri $refreshUrl -Method Post -Headers $refreshHeaders -Body $refreshPayload
+            Write-Host "✓ Refresh triggered successfully"
+        }
+        catch {
+            Write-Host "❌ Refresh failed: $($_.Exception.Message)"
+        }
 
         # ✅ Return JSON with id + name
         $output = @{
