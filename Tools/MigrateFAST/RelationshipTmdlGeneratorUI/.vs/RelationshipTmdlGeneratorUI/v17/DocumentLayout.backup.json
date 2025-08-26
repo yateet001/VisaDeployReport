@@ -1,0 +1,103 @@
+{
+  "Version": 1,
+  "WorkspaceRootPath": "C:\\Users\\RitikLNUMAQSoftware\\Desktop\\RelationshipTmdlGeneratorUI\\",
+  "Documents": [
+    {
+      "AbsoluteMoniker": "D:0:0:{854C2D1B-6CF9-4835-BBBD-2124A829D8DF}|RelationshipTmdlGeneratorUI\\RelationshipTmdlGeneratorUI.csproj|c:\\users\\ritiklnumaqsoftware\\desktop\\relationshiptmdlgeneratorui\\relationshiptmdlgeneratorui\\tmdlservice.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{854C2D1B-6CF9-4835-BBBD-2124A829D8DF}|RelationshipTmdlGeneratorUI\\RelationshipTmdlGeneratorUI.csproj|solutionrelative:relationshiptmdlgeneratorui\\tmdlservice.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{854C2D1B-6CF9-4835-BBBD-2124A829D8DF}|RelationshipTmdlGeneratorUI\\RelationshipTmdlGeneratorUI.csproj|c:\\users\\ritiklnumaqsoftware\\desktop\\relationshiptmdlgeneratorui\\relationshiptmdlgeneratorui\\form1.designer.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{854C2D1B-6CF9-4835-BBBD-2124A829D8DF}|RelationshipTmdlGeneratorUI\\RelationshipTmdlGeneratorUI.csproj|solutionrelative:relationshiptmdlgeneratorui\\form1.designer.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{854C2D1B-6CF9-4835-BBBD-2124A829D8DF}|RelationshipTmdlGeneratorUI\\RelationshipTmdlGeneratorUI.csproj|c:\\users\\ritiklnumaqsoftware\\desktop\\relationshiptmdlgeneratorui\\relationshiptmdlgeneratorui\\form1.resx||{81828910-B8B3-4D2B-99A3-067027C180C1}",
+      "RelativeMoniker": "D:0:0:{854C2D1B-6CF9-4835-BBBD-2124A829D8DF}|RelationshipTmdlGeneratorUI\\RelationshipTmdlGeneratorUI.csproj|solutionrelative:relationshiptmdlgeneratorui\\form1.resx||{81828910-B8B3-4D2B-99A3-067027C180C1}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{854C2D1B-6CF9-4835-BBBD-2124A829D8DF}|RelationshipTmdlGeneratorUI\\RelationshipTmdlGeneratorUI.csproj|c:\\users\\ritiklnumaqsoftware\\desktop\\relationshiptmdlgeneratorui\\relationshiptmdlgeneratorui\\relationship.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{854C2D1B-6CF9-4835-BBBD-2124A829D8DF}|RelationshipTmdlGeneratorUI\\RelationshipTmdlGeneratorUI.csproj|solutionrelative:relationshiptmdlgeneratorui\\relationship.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{854C2D1B-6CF9-4835-BBBD-2124A829D8DF}|RelationshipTmdlGeneratorUI\\RelationshipTmdlGeneratorUI.csproj|C:\\Users\\RitikLNUMAQSoftware\\Desktop\\RelationshipTmdlGeneratorUI\\relationshiptmdlgeneratorui\\form1.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}|Form",
+      "RelativeMoniker": "D:0:0:{854C2D1B-6CF9-4835-BBBD-2124A829D8DF}|RelationshipTmdlGeneratorUI\\RelationshipTmdlGeneratorUI.csproj|solutionrelative:relationshiptmdlgeneratorui\\form1.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}|Form"
+    }
+  ],
+  "DocumentGroupContainers": [
+    {
+      "Orientation": 0,
+      "VerticalTabListWidth": 256,
+      "DocumentGroups": [
+        {
+          "DockedWidth": 200,
+          "SelectedChildIndex": 3,
+          "Children": [
+            {
+              "$type": "Document",
+              "DocumentIndex": 1,
+              "Title": "Form1.Designer.cs",
+              "DocumentMoniker": "C:\\Users\\RitikLNUMAQSoftware\\Desktop\\RelationshipTmdlGeneratorUI\\RelationshipTmdlGeneratorUI\\Form1.Designer.cs",
+              "RelativeDocumentMoniker": "RelationshipTmdlGeneratorUI\\Form1.Designer.cs",
+              "ToolTip": "C:\\Users\\RitikLNUMAQSoftware\\Desktop\\RelationshipTmdlGeneratorUI\\RelationshipTmdlGeneratorUI\\Form1.Designer.cs",
+              "RelativeToolTip": "RelationshipTmdlGeneratorUI\\Form1.Designer.cs",
+              "ViewState": "AgIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2025-08-26T08:44:32.124Z"
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 2,
+              "Title": "Form1.resx",
+              "DocumentMoniker": "C:\\Users\\RitikLNUMAQSoftware\\Desktop\\RelationshipTmdlGeneratorUI\\RelationshipTmdlGeneratorUI\\Form1.resx",
+              "RelativeDocumentMoniker": "RelationshipTmdlGeneratorUI\\Form1.resx",
+              "ToolTip": "C:\\Users\\RitikLNUMAQSoftware\\Desktop\\RelationshipTmdlGeneratorUI\\RelationshipTmdlGeneratorUI\\Form1.resx",
+              "RelativeToolTip": "RelationshipTmdlGeneratorUI\\Form1.resx",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.001005|",
+              "WhenOpened": "2025-08-26T08:39:55.339Z"
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 3,
+              "Title": "Relationship.cs",
+              "DocumentMoniker": "C:\\Users\\RitikLNUMAQSoftware\\Desktop\\RelationshipTmdlGeneratorUI\\RelationshipTmdlGeneratorUI\\Relationship.cs",
+              "RelativeDocumentMoniker": "RelationshipTmdlGeneratorUI\\Relationship.cs",
+              "ToolTip": "C:\\Users\\RitikLNUMAQSoftware\\Desktop\\RelationshipTmdlGeneratorUI\\RelationshipTmdlGeneratorUI\\Relationship.cs",
+              "RelativeToolTip": "RelationshipTmdlGeneratorUI\\Relationship.cs",
+              "ViewState": "AgIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2025-08-26T06:49:13.753Z"
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 0,
+              "Title": "TmdlService.cs",
+              "DocumentMoniker": "C:\\Users\\RitikLNUMAQSoftware\\Desktop\\RelationshipTmdlGeneratorUI\\RelationshipTmdlGeneratorUI\\TmdlService.cs",
+              "RelativeDocumentMoniker": "RelationshipTmdlGeneratorUI\\TmdlService.cs",
+              "ToolTip": "C:\\Users\\RitikLNUMAQSoftware\\Desktop\\RelationshipTmdlGeneratorUI\\RelationshipTmdlGeneratorUI\\TmdlService.cs",
+              "RelativeToolTip": "RelationshipTmdlGeneratorUI\\TmdlService.cs",
+              "ViewState": "AgIAAAAAAAAAAAAAAAAAAAYAAAAfAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2025-08-26T06:48:43.384Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 4,
+              "Title": "Form1.cs [Design]",
+              "DocumentMoniker": "C:\\Users\\RitikLNUMAQSoftware\\Desktop\\RelationshipTmdlGeneratorUI\\RelationshipTmdlGeneratorUI\\Form1.cs",
+              "RelativeDocumentMoniker": "RelationshipTmdlGeneratorUI\\Form1.cs",
+              "ToolTip": "C:\\Users\\RitikLNUMAQSoftware\\Desktop\\RelationshipTmdlGeneratorUI\\RelationshipTmdlGeneratorUI\\Form1.cs [Design]",
+              "RelativeToolTip": "RelationshipTmdlGeneratorUI\\Form1.cs [Design]",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2025-08-26T08:40:01.026Z"
+            },
+            {
+              "$type": "Bookmark",
+              "Name": "ST:0:0:{cce594b6-0c39-4442-ba28-10c64ac7e89f}"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
