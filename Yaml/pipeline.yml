@@ -14,7 +14,7 @@ parameters:
   - name: Deployment_Environment
     displayName: "Deployment Environment"
     type: string
-    default: "PROD"
+    default: "DEV"
     values:
       - "DEV"
       - "PROD"
