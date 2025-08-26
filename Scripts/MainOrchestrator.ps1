@@ -480,20 +480,20 @@ function Deploy-SemanticModel {
         Invoke-RestMethod -Uri $updateUrl -Method Post -Body $updatePayload -Headers $headers
         Write-Host "✓ Semantic model updated successfully"
 
-        # 🔄 Step 2: Trigger refresh (Fabric API)
-        $refreshUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/items/$($existingModel.id)/refresh"
-        Write-Host "Triggering refresh for semantic model (ID: $($existingModel.id))..."
-        Write-Host "Refresh URL: $refreshUrl"
-        Invoke-RestMethod -Uri $refreshUrl -Method Post -Headers $headers
-        Write-Host "✓ Refresh triggered (Fabric PBIP model)"
+        # # 🔄 Step 2: Trigger refresh (Fabric API)
+        # $refreshUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/items/$($existingModel.id)/refresh"
+        # Write-Host "Triggering refresh for semantic model (ID: $($existingModel.id))..."
+        # Write-Host "Refresh URL: $refreshUrl"
+        # Invoke-RestMethod -Uri $refreshUrl -Method Post -Headers $headers
+        # Write-Host "✓ Refresh triggered (Fabric PBIP model)"
 
-        # ✅ Return JSON with id + name
-        $output = @{
-            id   = $existingModel.id
-            name = $existingModel.displayName
-            refreshStatus = "Triggered"
-        } | ConvertTo-Json -Depth 5
-        Write-Output $output
+        # # ✅ Return JSON with id + name
+        # $output = @{
+        #     id   = $existingModel.id
+        #     name = $existingModel.displayName
+        #     refreshStatus = "Triggered"
+        # } | ConvertTo-Json -Depth 5
+        # Write-Output $output
 
     } catch {
         Write-Error "Failed to deploy/refresh semantic model: $($_)"
