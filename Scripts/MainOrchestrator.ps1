@@ -497,11 +497,15 @@ function Deploy-SemanticModel {
        # 🔄 Step 2: Trigger Refresh on the NEW modelId
 if ($modelId) {
     Write-Host "Triggering refresh for model ID: $modelId ..."
-    $refreshUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels/$modelId/refreshes"
+
+    # Power BI REST API refresh (dataset = semantic model)
+    $refreshUrl = "https://api.powerbi.com/v1.0/myorg/groups/$WorkspaceId/datasets/$modelId/refreshes"
     $refreshPayload = @{ type = "Full" } | ConvertTo-Json -Depth 5
+
     $refreshResp = Invoke-RestMethod -Uri $refreshUrl -Method Post -Headers $headers -Body $refreshPayload
-    Write-Host "✓ Refresh triggered successfully (Refresh ID: $($refreshResp.id))"
+    Write-Host "✓ Refresh triggered successfully"
 }
+
 
 
 
