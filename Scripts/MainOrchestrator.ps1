@@ -509,21 +509,15 @@ function Deploy-SemanticModel {
         # Invoke-RestMethod -Uri $refreshUrl -Method Post -Headers $headers
         # Write-Host "✓ Refresh triggered (Fabric PBIP model)"
 
-        Write-Host "Resolving datasetId for semantic model (ID: $deployedModelId)..."
-
-        # Step 1: Get all datasets from the workspace
-        $datasetsUrl = "https://api.powerbi.com/v1.0/myorg/groups/$WorkspaceId/datasets"
+        $datasetsUrl = "https://api.powerbi.com/v1.0/myorg/groups/$WorkspaceId/datasets?`$filter=semanticModelId eq '$deployedModelId'"
         $datasetsResp = Invoke-RestMethod -Uri $datasetsUrl -Method Get -Headers @{ "Authorization" = "Bearer $AccessToken" }
 
-        # Step 2: Find dataset which has same id as semantic model OR same name
-        $matchingDataset = $datasetsResp.value | Where-Object { $_.id -eq $deployedModelId -or $_.name -eq $deployedModelName }
-
-        if ($null -eq $matchingDataset) {
-            throw "❌ No dataset found matching semantic model $deployedModelName ($deployedModelId)"
+        if ($null -eq $datasetsResp.value -or $datasetsResp.value.Count -eq 0) {
+            throw "❌ No dataset found linked to semanticModelId $deployedModelId"
         }
 
-        $deployedDatasetId = $matchingDataset.id
-        Write-Host "✓ Dataset resolved: $deployedDatasetId"
+        $deployedDatasetId = $datasetsResp.value[0].id
+        Write-Host "✓ Dataset resolved from semanticModelId: $deployedDatasetId"
 
         Write-Host "Triggering refresh for semantic model (ID: $deployedDatasetId)..."
         $refreshUrl = "https://api.powerbi.com/v1.0/myorg/groups/$WorkspaceId/datasets/$deployedDatasetId/refreshes"
