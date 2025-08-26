@@ -503,38 +503,17 @@ function Deploy-SemanticModel {
         return @{ Success = $false; deployedModelId = $null; Error = "$($_)" }
     }
     # 🔄 Step 2: Trigger refresh (Fabric API)
-        # $refreshUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels/$deployedModelId/refreshes"
-        # Write-Host "Triggering refresh for semantic model (ID: $deployedModelId)..."
-        # Write-Host "Refresh URL: $refreshUrl"
-        # Invoke-RestMethod -Uri $refreshUrl -Method Post -Headers $headers
-        # Write-Host "✓ Refresh triggered (Fabric PBIP model)"
-
-        $datasetsUrl = "https://api.powerbi.com/v1.0/myorg/groups/$WorkspaceId/datasets?`$filter=semanticModelId eq '$deployedModelId'"
-        $datasetsResp = Invoke-RestMethod -Uri $datasetsUrl -Method Get -Headers @{ "Authorization" = "Bearer $AccessToken" }
-
-        if ($null -eq $datasetsResp.value -or $datasetsResp.value.Count -eq 0) {
-            throw "❌ No dataset found linked to semanticModelId $deployedModelId"
+        $refreshUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels/$deployedModelId/refreshes"
+        Write-Host "Triggering refresh for semantic model (ID: $deployedModelId)..."
+        Write-Host "Refresh URL: $refreshUrl"
+        $refreshPayload = "{}" | ConvertTo-Json
+        $refreshHeaders = @{
+             "Authorization" = "Bearer $AccessToken"
+            #  "Content-Type" = "application/json"
         }
-
-        $deployedDatasetId = $datasetsResp.value[0].id
-        Write-Host "✓ Dataset resolved from semanticModelId: $deployedDatasetId"
-
-        Write-Host "Triggering refresh for semantic model (ID: $deployedDatasetId)..."
-        $refreshUrl = "https://api.powerbi.com/v1.0/myorg/groups/$WorkspaceId/datasets/$deployedDatasetId/refreshes"
-        # $refreshPayload = @{} | ConvertTo-Json
-        # $refreshHeaders = @{
-        #      "Authorization" = "Bearer $AccessToken"
-        #     #  "Content-Type" = "application/json"
-        # }
-
-        # try {
-        #    Invoke-RestMethod -Uri $refreshUrl -Method Post -Headers @{"Authorization" = "Bearer $AccessToken"} -Body $refreshPayload -ContentType "application/json"
-        #     # Invoke-RestMethod -Uri $refreshUrl -Method Post -Headers $refreshHeaders -Body $refreshPayload
-        #     Write-Host "✓ Refresh triggered successfully"
-        # }
-        # catch {
-        #     Write-Host "❌ Refresh failed: $($_.Exception.Message)"
-        # }
+        Invoke-RestMethod -Uri $refreshUrl -Method Post -Headers $refreshHeaders -Body $refreshPayload
+        # Invoke-RestMethod -Uri $refreshUrl -Method Post -Headers $headers
+        Write-Host "✓ Refresh triggered (Fabric PBIP model)"
         
          try {
             Invoke-RestMethod `
