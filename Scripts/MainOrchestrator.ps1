@@ -480,54 +480,19 @@ function Deploy-SemanticModel {
         Invoke-RestMethod -Uri $updateUrl -Method Post -Body $updatePayload -Headers $headers
         Write-Host "✓ Semantic model updated successfully"
 
-        # # 👑 Step 2: TakeOver (make current caller the owner)
-        # Write-Host "Taking over ownership of semantic model..."
-        # $takeoverUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels/$($existingModel.id)/takeover"
-        # Invoke-RestMethod -Uri $takeoverUrl -Method Post -Headers $headers
-        # Write-Host "✓ Ownership taken successfully"
-
-        # 🔄 Step 3: Trigger refresh (Power BI REST API, not Fabric API)
-        $refreshUrl = "https://api.powerbi.com/v1.0/myorg/groups/$WorkspaceId/datasets/$($existingModel.id)/refreshes"
+        # 🔄 Step 2: Trigger refresh (Fabric API)
+        $refreshUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/items/$($existingModel.id)/refresh"
         Write-Host "Triggering refresh for semantic model (ID: $($existingModel.id))..."
-        $refreshResponse = Invoke-RestMethod -Uri $refreshUrl -Method Post -Headers $headers
-        $refreshId = $refreshResponse.id
-        Write-Host "✓ Refresh triggered (Refresh ID: $refreshId)"
+        Invoke-RestMethod -Uri $refreshUrl -Method Post -Headers $headers
+        Write-Host "✓ Refresh triggered (Fabric PBIP model)"
 
-        # 🔍 Step 4: Poll refresh status
-        $statusUrl = "$refreshUrl/$refreshId"
-        $maxWaitMinutes = 10
-        $sleepSeconds = 15
-        $elapsed = 0
-
-        while ($elapsed -lt ($maxWaitMinutes * 60)) {
-            Start-Sleep -Seconds $sleepSeconds
-            $elapsed += $sleepSeconds
-
-            $statusResponse = Invoke-RestMethod -Uri $statusUrl -Method Get -Headers $headers
-            $status = $statusResponse.status
-
-            Write-Host "⏳ Refresh status: $status (elapsed ${elapsed}s)"
-
-            if ($status -eq "Completed") {
-                Write-Host "✅ Refresh completed successfully"
-                return @{ Success = $true; ModelId = $existingModel.id; RefreshId = $refreshId; RefreshStatus = "Completed" }
-            }
-            elseif ($status -eq "Failed") {
-                Write-Host "❌ Refresh failed"
-                return @{ Success = $false; ModelId = $existingModel.id; RefreshId = $refreshId; RefreshStatus = "Failed" }
-            }
-        }
-
-        Write-Host "⚠️ Refresh timed out after $maxWaitMinutes minutes"
-        return @{ Success = $false; ModelId = $existingModel.id; RefreshId = $refreshId; RefreshStatus = "Timeout" }
+        return @{ Success = $true; ModelId = $existingModel.id; RefreshStatus = "Triggered" }
 
     } catch {
-        Write-Error "Failed to deploy/takeover/refresh semantic model: $($_)"
+        Write-Error "Failed to deploy/refresh semantic model: $($_)"
         return @{ Success = $false; ModelId = $null; Error = "$($_)" }
     }
 }
-
-
 
 
 function Deploy-Report {
