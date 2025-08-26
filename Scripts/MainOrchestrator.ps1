@@ -511,20 +511,32 @@ function Deploy-SemanticModel {
 
         Write-Host "Triggering refresh for semantic model (ID: $deployedModelId)..."
         $refreshUrl = "https://api.powerbi.com/v1.0/myorg/groups/$WorkspaceId/datasets/$deployedModelId/refreshes"
-        $refreshPayload = @{} | ConvertTo-Json
+        # $refreshPayload = @{} | ConvertTo-Json
         # $refreshHeaders = @{
         #      "Authorization" = "Bearer $AccessToken"
         #     #  "Content-Type" = "application/json"
         # }
 
-        try {
-           Invoke-RestMethod -Uri $refreshUrl -Method Post -Headers @{"Authorization" = "Bearer $AccessToken"} -Body $refreshPayload -ContentType "application/json"
-            # Invoke-RestMethod -Uri $refreshUrl -Method Post -Headers $refreshHeaders -Body $refreshPayload
-            Write-Host "✓ Refresh triggered successfully"
-        }
-        catch {
-            Write-Host "❌ Refresh failed: $($_.Exception.Message)"
-        }
+        # try {
+        #    Invoke-RestMethod -Uri $refreshUrl -Method Post -Headers @{"Authorization" = "Bearer $AccessToken"} -Body $refreshPayload -ContentType "application/json"
+        #     # Invoke-RestMethod -Uri $refreshUrl -Method Post -Headers $refreshHeaders -Body $refreshPayload
+        #     Write-Host "✓ Refresh triggered successfully"
+        # }
+        # catch {
+        #     Write-Host "❌ Refresh failed: $($_.Exception.Message)"
+        # }
+        
+            try {
+                Invoke-RestMethod `
+                    -Uri $refreshUrl `
+                    -Method Post `
+                    -Headers @{ "Authorization" = "Bearer $AccessToken"; "Content-Type" = "application/json" } `
+                    -Body "{}"   # ✅ Explicit empty JSON body
+                Write-Host "✓ Refresh triggered successfully"
+            }
+                    catch {
+                        Write-Host "❌ Refresh failed: $($_.Exception.Message)"
+                }
 
         # ✅ Return JSON with id + name
         $output = @{
