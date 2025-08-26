@@ -526,17 +526,16 @@ function Deploy-SemanticModel {
         #     Write-Host "❌ Refresh failed: $($_.Exception.Message)"
         # }
         
-            try {
-                Invoke-RestMethod `
-                    -Uri $refreshUrl `
-                    -Method Post `
-                    -Headers @{ "Authorization" = "Bearer $AccessToken"; "Content-Type" = "application/json" } `
-                    -Body "{}"   # ✅ Explicit empty JSON body
-                Write-Host "✓ Refresh triggered successfully"
-            }
-                    catch {
-                        Write-Host "❌ Refresh failed: $($_.Exception.Message)"
-                }
+         try {
+            Invoke-RestMethod `
+                -Uri $refreshUrl `
+                -Method Post `
+                -Headers @{ "Authorization" = "Bearer $AccessToken" }  # ⚡ No Content-Type, No Body
+            Write-Host "✓ Refresh triggered successfully"
+        }
+        catch {
+            Write-Host "❌ Refresh failed: $($_.Exception.Message)"
+        }
 
         # ✅ Return JSON with id + name
         $output = @{
