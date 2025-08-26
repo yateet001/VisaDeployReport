@@ -480,14 +480,20 @@ function Deploy-SemanticModel {
         Invoke-RestMethod -Uri $updateUrl -Method Post -Body $updatePayload -Headers $headers
         Write-Host "✓ Semantic model updated successfully"
 
-        # 🔄 Step 2: Trigger refresh
+        # 👑 Step 2: TakeOver (make current caller the owner)
+        Write-Host "Taking over ownership of semantic model..."
+        $takeoverUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels/$($existingModel.id)/takeover"
+        Invoke-RestMethod -Uri $takeoverUrl -Method Post -Headers $headers
+        Write-Host "✓ Ownership taken successfully"
+
+        # 🔄 Step 3: Trigger refresh
         $refreshUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels/$($existingModel.id)/refreshes"
         Write-Host "Triggering refresh for semantic model (ID: $($existingModel.id))..."
         $refreshResponse = Invoke-RestMethod -Uri $refreshUrl -Method Post -Headers $headers
         $refreshId = $refreshResponse.id
         Write-Host "✓ Refresh triggered (Refresh ID: $refreshId)"
 
-        # 🔍 Step 3: Poll for refresh status
+        # 🔍 Step 4: Poll for refresh status
         $statusUrl = "$refreshUrl/$refreshId"
         $maxWaitMinutes = 10
         $sleepSeconds = 15
@@ -516,10 +522,11 @@ function Deploy-SemanticModel {
         return @{ Success = $false; ModelId = $existingModel.id; RefreshId = $refreshId; RefreshStatus = "Timeout" }
 
     } catch {
-        Write-Error "Failed to deploy/refresh semantic model: $($_)"
+        Write-Error "Failed to deploy/takeover/refresh semantic model: $($_)"
         return @{ Success = $false; ModelId = $null; Error = "$($_)" }
     }
 }
+
 
 
 
