@@ -486,11 +486,21 @@ function Deploy-SemanticModel {
         Invoke-RestMethod -Uri $refreshUrl -Method Post -Headers $headers
         Write-Host "✓ Refresh triggered (Fabric PBIP model)"
 
-        return @{ Success = $true; ModelId = $existingModel.id; RefreshStatus = "Triggered" }
+        # ✅ Return JSON with id + name
+        $output = @{
+            id   = $existingModel.id
+            name = $existingModel.displayName
+            refreshStatus = "Triggered"
+        } | ConvertTo-Json -Depth 5
+        Write-Output $output
 
     } catch {
         Write-Error "Failed to deploy/refresh semantic model: $($_)"
-        return @{ Success = $false; ModelId = $null; Error = "$($_)" }
+        $errorOutput = @{
+            error   = "$($_)"
+            success = $false
+        } | ConvertTo-Json -Depth 5
+        Write-Output $errorOutput
     }
 }
 
