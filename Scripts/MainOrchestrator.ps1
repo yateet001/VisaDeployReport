@@ -498,122 +498,94 @@ function Deploy-SemanticModel {
         # 🔄 Step 2: Trigger Refresh via Power BI REST API
         if ($modelId) {
 
-            # Helpers (PS 5.1 compatible)
-            function Get-ResponseBodyFromError {
-                param([System.Management.Automation.ErrorRecord] $ErrorRecord)
-                try {
-                    if ($ErrorRecord -and $ErrorRecord.ErrorDetails -and $ErrorRecord.ErrorDetails.Message) {
-                        return $ErrorRecord.ErrorDetails.Message
-                    } elseif ($ErrorRecord -and $ErrorRecord.Exception -and $ErrorRecord.Exception.Response) {
-                        $respStream = $ErrorRecord.Exception.Response.GetResponseStream()
-                        if ($respStream) {
-                            $reader = New-Object System.IO.StreamReader($respStream)
-                            $text = $reader.ReadToEnd()
-                            $reader.Dispose()
-                            return $text
-                        }
-                    }
-                } catch { }
-                return $null
+    function Resolve-PowerBIDatasetId {
+        param(
+            [string]$WorkspaceId,
+            [string]$ModelId,
+            [string]$ModelName,
+            [hashtable]$Headers
+        )
+        $url = "https://api.powerbi.com/v1.0/myorg/groups/$WorkspaceId/datasets"
+        $list = Invoke-RestMethod -Uri $url -Method Get -Headers $Headers
+        $dataset = $null
+        if ($list -and $list.value) {
+            $dataset = $list.value | Where-Object { $_.id -eq $ModelId } | Select-Object -First 1
+            if (-not $dataset -and $ModelName) {
+                $dataset = $list.value | Where-Object { $_.name -eq $ModelName } | Select-Object -First 1
             }
-
-            function Resolve-PowerBIDatasetId {
-                param(
-                    [string]$WorkspaceId,
-                    [string]$ModelId,
-                    [string]$ModelName,
-                    [hashtable]$Headers
-                )
-                $url = "https://api.powerbi.com/v1.0/myorg/groups/$WorkspaceId/datasets"
-                $list = Invoke-RestMethod -Uri $url -Method Get -Headers $Headers
-                $dataset = $null
-                if ($list -and $list.value) {
-                    # First try by exact id
-                    $dataset = $list.value | Where-Object { $_.id -eq $ModelId } | Select-Object -First 1
-                    # Fallback by display name (in case ids differ due to timing)
-                    if (-not $dataset -and $ModelName) {
-                        $dataset = $list.value | Where-Object { $_.name -eq $ModelName } | Select-Object -First 1
-                    }
-                }
-                if ($dataset) { return $dataset.id } else { return $null }
-            }
-
-            # Ensure TLS 1.2 (older agents)
-            try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch {}
-
-            # Power BI headers (separate from Fabric headers)
-            $pbiHeaders = @{
-                "Authorization" = "Bearer $AccessToken"
-                "Content-Type"  = "application/json"
-                "Accept"        = "application/json"
-            }
-
-            Write-Host "Resolving Power BI dataset for model '$ModelName' (modelId: $modelId) ..."
-
-            # Small delay after update to allow metadata sync
-            Write-Host "Waiting 20s to allow model definition to sync..."
-            Start-Sleep -Seconds 20
-
-            # Resolve dataset id (retry once if needed)
-            $datasetId = Resolve-PowerBIDatasetId -WorkspaceId $WorkspaceId -ModelId $modelId -ModelName $ModelName -Headers $pbiHeaders
-            if (-not $datasetId) {
-                Write-Warning "Dataset not found yet, retrying in 15s..."
-                Start-Sleep -Seconds 15
-                $datasetId = Resolve-PowerBIDatasetId -WorkspaceId $WorkspaceId -ModelId $modelId -ModelName $ModelName -Headers $pbiHeaders
-            }
-            if (-not $datasetId) {
-                throw "Power BI dataset not found in workspace '$WorkspaceId' for modelId '$modelId' / name '$ModelName'."
-            }
-
-            Write-Host "Triggering refresh for datasetId: $datasetId ..."
-            $refreshUrl = "https://api.powerbi.com/v1.0/myorg/groups/$WorkspaceId/datasets/$datasetId/refreshes"
-
-            # Try Enhanced (model-based) refresh first
-            try {
-                $enhancedPayload = @{ type = "Full" } | ConvertTo-Json -Depth 5
-                $resp = Invoke-RestMethod -Uri $refreshUrl -Method Post -Headers $pbiHeaders -Body $enhancedPayload
-                if ($resp -and $resp.id) {
-                    Write-Host "✓ Enhanced refresh triggered (Refresh ID: $($resp.id))"
-                } else {
-                    Write-Host "✓ Enhanced refresh triggered"
-                }
-            }
-            catch {
-                $rawBody = Get-ResponseBodyFromError $_
-                $errCode = $null; $errMsg = $null
-                if ($rawBody) {
-                    try {
-                        $j = $rawBody | ConvertFrom-Json -ErrorAction Stop
-                        if ($j -and $j.error) {
-                            $errCode = $j.error.code
-                            $errMsg  = $j.error.message
-                        }
-                    } catch { }
-                }
-
-                if ($errCode -eq 'InvalidRequest' -and $errMsg -like '*Model-based*') {
-                    Write-Warning "Enhanced refresh not supported for this dataset → falling back to CLASSIC refresh."
-
-                    # Classic refresh: no 'type' field
-                    $classicPayload = @{ notifyOption = "MailOnFailure" } | ConvertTo-Json
-                    $resp2 = Invoke-RestMethod -Uri $refreshUrl -Method Post -Headers $pbiHeaders -Body $classicPayload
-                    Write-Host "✓ Classic refresh triggered"
-                } else {
-                    if ($rawBody) {
-                        throw "Refresh failed: $rawBody"
-                    } else {
-                        throw $_
-                    }
-                }
-            }
-
-            return @{ Success = $true; ModelId = $modelId }
         }
-        # ===================== REPLACE TILL HERE =====================
+        return $dataset?.id
+    }
+
+    $pbiHeaders = @{
+        "Authorization" = "Bearer $AccessToken"
+        "Content-Type"  = "application/json"
+        "Accept"        = "application/json"
+    }
+
+    Write-Host "Resolving Power BI dataset for model '$ModelName' (modelId: $modelId) ..."
+    Start-Sleep -Seconds 20
+
+    $datasetId = Resolve-PowerBIDatasetId -WorkspaceId $WorkspaceId -ModelId $modelId -ModelName $ModelName -Headers $pbiHeaders
+    if (-not $datasetId) {
+        Write-Warning "Dataset not found yet, retrying in 15s..."
+        Start-Sleep -Seconds 15
+        $datasetId = Resolve-PowerBIDatasetId -WorkspaceId $WorkspaceId -ModelId $modelId -ModelName $ModelName -Headers $pbiHeaders
+    }
+    if (-not $datasetId) {
+        throw "Power BI dataset not found in workspace '$WorkspaceId' for modelId '$modelId' / name '$ModelName'."
+    }
+
+    Write-Host "Triggering refresh for datasetId: $datasetId ..."
+    $refreshUrl = "https://api.powerbi.com/v1.0/myorg/groups/$WorkspaceId/datasets/$datasetId/refreshes"
+
+    try {
+        # Enhanced refresh (model-based datasets)
+        $enhancedPayload = @{ type = "Full" } | ConvertTo-Json -Depth 5
+        $resp = Invoke-RestMethod -Uri $refreshUrl -Method Post -Headers $pbiHeaders -Body $enhancedPayload
+        Write-Host "✓ Enhanced refresh triggered (Refresh ID: $($resp.id))"
+    }
+    catch {
+    # Extract raw body safely
+    $rawBody = $null
+    if ($_.ErrorDetails -and $_.ErrorDetails.Message) {
+        $rawBody = $_.ErrorDetails.Message
+    }
+    elseif ($_.Exception -and $_.Exception.Response) {
+        try {
+            $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
+            $rawBody = $reader.ReadToEnd()
+            $reader.Dispose()
+        } catch {}
+    }
+
+    $errCode = $null
+    $errMsg  = $null
+    if ($rawBody) {
+        try {
+            $j = $rawBody | ConvertFrom-Json -ErrorAction Stop
+            if ($j -and $j.error) {
+                $errCode = $j.error.code
+                $errMsg  = $j.error.message
+            }
+        } catch {}
+    }
+
+    if ($errCode -eq 'InvalidRequest' -and $errMsg -like '*Model-based*') {
+        Write-Warning "Enhanced refresh not supported → falling back to classic refresh."
+
+        # Classic refresh (empty body, because notifyOption is not allowed for app tokens)
+        $resp2 = Invoke-RestMethod -Uri $refreshUrl -Method Post -Headers $pbiHeaders
+        Write-Host "✓ Classic refresh triggered"
+    }
+    else {
+        throw "Refresh failed: $rawBody"
+    }
+}
 
 
-
-
+    return @{ Success = $true; ModelId = $modelId }
+}
 
 
         return @{ Success = $true; ModelId = $modelId }
