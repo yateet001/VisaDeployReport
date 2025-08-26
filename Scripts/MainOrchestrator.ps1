@@ -478,7 +478,7 @@ function Deploy-SemanticModel {
             $updatePayload = @{ definition = @{ parts = $smParts } } | ConvertTo-Json -Depth 50
             Invoke-RestMethod -Uri $updateUrl -Method Post -Body $updatePayload -Headers $headers
             Write-Host "✓ Semantic model updated successfully"
-            $deployedModelId = $existingModel.datasets[0].id
+            $deployedModelId = $existingModel.id
             $deployedModelName = $existingModel.displayName
             # return @{ Success = $true; ModelId = $existingModel.id }
         }
@@ -509,8 +509,24 @@ function Deploy-SemanticModel {
         # Invoke-RestMethod -Uri $refreshUrl -Method Post -Headers $headers
         # Write-Host "✓ Refresh triggered (Fabric PBIP model)"
 
-        Write-Host "Triggering refresh for semantic model (ID: $deployedModelId)..."
-        $refreshUrl = "https://api.powerbi.com/v1.0/myorg/groups/$WorkspaceId/datasets/$deployedModelId/refreshes"
+        Write-Host "Resolving datasetId for semantic model (ID: $deployedModelId)..."
+
+        # Step 1: Get all datasets from the workspace
+        $datasetsUrl = "https://api.powerbi.com/v1.0/myorg/groups/$WorkspaceId/datasets"
+        $datasetsResp = Invoke-RestMethod -Uri $datasetsUrl -Method Get -Headers @{ "Authorization" = "Bearer $AccessToken" }
+
+        # Step 2: Find dataset which has same id as semantic model OR same name
+        $matchingDataset = $datasetsResp.value | Where-Object { $_.id -eq $deployedModelId -or $_.name -eq $deployedModelName }
+
+        if ($null -eq $matchingDataset) {
+            throw "❌ No dataset found matching semantic model $deployedModelName ($deployedModelId)"
+        }
+
+        $deployedDatasetId = $matchingDataset.id
+        Write-Host "✓ Dataset resolved: $deployedDatasetId"
+
+        Write-Host "Triggering refresh for semantic model (ID: $deployedDatasetId)..."
+        $refreshUrl = "https://api.powerbi.com/v1.0/myorg/groups/$WorkspaceId/datasets/$deployedDatasetId/refreshes"
         # $refreshPayload = @{} | ConvertTo-Json
         # $refreshHeaders = @{
         #      "Authorization" = "Bearer $AccessToken"
