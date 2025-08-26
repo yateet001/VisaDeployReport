@@ -465,45 +465,39 @@ function Deploy-SemanticModel {
 
         $headers = @{ "Authorization" = "Bearer $AccessToken"; "Content-Type" = "application/json" }
 
-        # 🔑 Step 1: Always check for existing model
+        # 🔑 Step 1: Check if model exists already
         $listUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels"
         $listResponse = Invoke-RestMethod -Uri $listUrl -Method Get -Headers $headers
         $existingModel = $listResponse.value | Where-Object { $_.displayName -eq $ModelName } | Select-Object -First 1
 
-        if (-not $existingModel) {
-            throw "Semantic model '$ModelName' not found in workspace $WorkspaceId"
+        if ($existingModel) {
+            Write-Host "Semantic model already exists (ID: $($existingModel.id)) → updating definition..."
+            $updateUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels/$($existingModel.id)/updateDefinition"
+            $updatePayload = @{ definition = @{ parts = $smParts } } | ConvertTo-Json -Depth 50
+            Invoke-RestMethod -Uri $updateUrl -Method Post -Body $updatePayload -Headers $headers
+            Write-Host "✓ Semantic model updated successfully"
+            return @{ Success = $true; ModelId = $existingModel.id }
+        }
+        else {
+            Write-Host "No existing model found → creating new semantic model..."
+            $deploymentPayload = @{
+                displayName = $ModelName
+                description = "Semantic model deployed from PBIP: $ModelName"
+                definition = @{ parts = $smParts }
+            } | ConvertTo-Json -Depth 50
+
+            $deployUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels"
+            $createResp = Invoke-RestMethod -Uri $deployUrl -Method Post -Body $deploymentPayload -Headers $headers
+            Write-Host "✓ Semantic model created successfully (ID: $($createResp.id))"
+            return @{ Success = $true; ModelId = $createResp.id }
         }
 
-        Write-Host "Semantic model exists (ID: $($existingModel.id)) → updating definition..."
-        $updateUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels/$($existingModel.id)/updateDefinition"
-        $updatePayload = @{ definition = @{ parts = $smParts } } | ConvertTo-Json -Depth 50
-        Invoke-RestMethod -Uri $updateUrl -Method Post -Body $updatePayload -Headers $headers
-        Write-Host "✓ Semantic model updated successfully"
-
-        # # 🔄 Step 2: Trigger refresh (Fabric API)
-        # $refreshUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/items/$($existingModel.id)/refresh"
-        # Write-Host "Triggering refresh for semantic model (ID: $($existingModel.id))..."
-        # Write-Host "Refresh URL: $refreshUrl"
-        # Invoke-RestMethod -Uri $refreshUrl -Method Post -Headers $headers
-        # Write-Host "✓ Refresh triggered (Fabric PBIP model)"
-
-        # # ✅ Return JSON with id + name
-        # $output = @{
-        #     id   = $existingModel.id
-        #     name = $existingModel.displayName
-        #     refreshStatus = "Triggered"
-        # } | ConvertTo-Json -Depth 5
-        # Write-Output $output
-
     } catch {
-        Write-Error "Failed to deploy/refresh semantic model: $($_)"
-        $errorOutput = @{
-            error   = "$($_)"
-            success = $false
-        } | ConvertTo-Json -Depth 5
-        Write-Output $errorOutput
+        Write-Error "Failed to deploy semantic model: $($_)"
+        return @{ Success = $false; ModelId = $null; Error = "$($_)" }
     }
 }
+
 
 
 function Deploy-Report {
