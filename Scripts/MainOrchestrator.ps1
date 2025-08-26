@@ -494,14 +494,15 @@ function Deploy-SemanticModel {
             $modelId = $createResp.id
         }
 
-        # 🔄 Step 2: Trigger Refresh on the NEW modelId
-        if ($modelId) {
-            Write-Host "Triggering refresh for model ID: $modelId ..."
-            $refreshUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels/$modelId/refresh"
-            $refreshPayload = @{ type = "Full" } | ConvertTo-Json -Depth 5
-            Invoke-RestMethod -Uri $refreshUrl -Method Post -Headers $headers -Body $refreshPayload
-            Write-Host "✓ Refresh triggered successfully"
-        }
+       # 🔄 Step 2: Trigger Refresh on the NEW modelId
+if ($modelId) {
+    Write-Host "Triggering refresh for model ID: $modelId ..."
+    $refreshUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels/$modelId/refreshes"
+    $refreshPayload = @{ type = "Full" } | ConvertTo-Json -Depth 5
+    $refreshResp = Invoke-RestMethod -Uri $refreshUrl -Method Post -Headers $headers -Body $refreshPayload
+    Write-Host "✓ Refresh triggered successfully (Refresh ID: $($refreshResp.id))"
+}
+
 
 
 
