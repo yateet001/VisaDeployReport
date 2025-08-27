@@ -575,7 +575,7 @@ function Deploy-Report {
             }
         }
 
-        # Build report payload
+        # Report payload
         $itemsReportPayload = @{
             displayName = $ReportName
             type        = 'Report'
@@ -618,11 +618,24 @@ function Deploy-Report {
             
             Write-Host "✓ Report deployed successfully"
             Write-Host "Full API response:" ($response | ConvertTo-Json -Depth 10)
-            if ($response.id) {
-                Write-Host "Report ID: $($response.id)"
-                return $response.id
+
+            # Safe ID extraction
+            $reportId = $null
+            if ($response) {
+                if ($response -is [System.Array]) {
+                    $reportId = $response[0].id
+                } elseif ($response.PSObject.Properties.Name -contains "id") {
+                    $reportId = $response.id
+                } elseif ($response.PSObject.Properties.Name -contains "Id") {
+                    $reportId = $response.Id
+                }
+            }
+
+            if ($reportId) {
+                Write-Host "Report ID: $reportId"
+                return $reportId
             } else {
-                Write-Warning "API response did not contain 'id'."
+                Write-Warning "API response did not contain a report ID."
                 return $null
             }
 
@@ -635,6 +648,8 @@ function Deploy-Report {
                 $errBody = $reader.ReadToEnd()
             } catch {}
             
+            Write-Error "Exception: $($_.Exception.Message)"
+            
             if ($statusCode -eq 409) {
                 Write-Host "Report already exists, attempting to find and update..."
                 
@@ -646,7 +661,7 @@ function Deploy-Report {
                     if ($existingReport) {
                         Write-Host "Found existing report with ID: $($existingReport.id)"
                         
-                        # Update definition with all parts
+                        # Update definition with ALL parts (and include format)
                         $updateUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/reports/$($existingReport.id)/updateDefinition"
                         $updatePayload = @{ 
                             definition = @{ 
@@ -654,7 +669,6 @@ function Deploy-Report {
                                 parts  = $parts 
                             } 
                         } | ConvertTo-Json -Depth 50 -Compress
-
                         
                         try {
                             $updateResponse = Invoke-RestMethod -Uri $updateUrl -Method Post -Body $updatePayload -Headers $headers
@@ -684,6 +698,7 @@ function Deploy-Report {
         return $null
     }
 }
+
 
 function Deploy-PBIPUsingFabricAPI {
     param(
