@@ -625,13 +625,37 @@ function Deploy-Report {
         } else {
             Write-Host "Creating new report..."
             
-            # Build parts for creation
+            # Build parts for creation and fix semantic model references
             $allFiles = Get-ChildItem -Path $ReportFolder -Recurse -File
             $parts = @()
             foreach ($file in $allFiles) {
                 $relativePath = ($file.FullName.Substring($ReportFolder.Length) -replace '^[\\/]+','')
                 $relativePath = $relativePath -replace '\\','/'
-                $bytes = [System.IO.File]::ReadAllBytes($file.FullName)
+                
+                # Special handling for definition.pbir file to fix semantic model references
+                if ($relativePath -eq "definition.pbir") {
+                    Write-Host "Processing definition.pbir file to fix semantic model references..."
+                    try {
+                        $pbirContent = Get-Content -Path $file.FullName -Raw | ConvertFrom-Json
+                        
+                        # Convert ByPath references to ByConnection using helper function
+                        $pbirContent = Convert-PbirReferences -PbirContent $pbirContent -SemanticModelId $SemanticModelId
+                        
+                        # Convert back to JSON and encode
+                        $modifiedContent = $pbirContent | ConvertTo-Json -Depth 50
+                        $bytes = [System.Text.Encoding]::UTF8.GetBytes($modifiedContent)
+                        
+                        Write-Host "✓ Successfully converted PBIR references"
+                    } catch {
+                        Write-Warning "Error processing PBIR file: $($_.Exception.Message)"
+                        # Fall back to original file content if conversion fails
+                        $bytes = [System.IO.File]::ReadAllBytes($file.FullName)
+                    }
+                } else {
+                    # For other files, read as-is
+                    $bytes = [System.IO.File]::ReadAllBytes($file.FullName)
+                }
+                
                 $b64 = [Convert]::ToBase64String($bytes)
                 $parts += @{
                     path = $relativePath
@@ -679,7 +703,7 @@ function Deploy-Report {
                         Write-Host "Operation started, polling status at: $operationUrl"
                         
                         # Wait for the operation to complete
-                        $operationResult = Wait-ForOperation -OperationUrl $operationUrl -Headers $headers -MaxWaitTimeMinutes 10
+                        $operationResult = Wait-ForOperation -OperationUrl $operationUrl -Headers $headers -MaxWaitTimeMinutes 3
                         
                         if ($operationResult -and $operationResult.result -and $operationResult.result.id) {
                             Write-Host "✓ Report created successfully via async operation (ID: $($operationResult.result.id))"
@@ -809,7 +833,7 @@ function Wait-ForOperation {
     param(
         [string]$OperationUrl,
         [hashtable]$Headers,
-        [int]$MaxWaitTimeMinutes = 10
+        [int]$MaxWaitTimeMinutes = 3
     )
     
     Write-Host "Waiting for long-running operation to complete..."
@@ -818,7 +842,7 @@ function Wait-ForOperation {
     
     do {
         Write-Host "Checking operation status (attempt $attempt)..."
-        Start-Sleep -Seconds 15
+        Start-Sleep -Seconds 10
         
         try {
             $operationResponse = Invoke-RestMethod -Uri $OperationUrl -Method Get -Headers $Headers
@@ -875,6 +899,64 @@ function Test-WorkspaceAccess {
         Write-Error "✗ Cannot access workspace $WorkspaceId`: $($_.Exception.Message)"
         return $false
     }
+}
+
+# Helper function to convert PBIR ByPath references to ByConnection
+function Convert-PbirReferences {
+    param(
+        [object]$PbirContent,
+        [string]$SemanticModelId
+    )
+    
+    Write-Host "Converting PBIR semantic model references..."
+    
+    # Handle different possible reference structures
+    if ($PbirContent.datasetReference) {
+        if ($PbirContent.datasetReference.byPath) {
+            Write-Host "Found ByPath reference, converting to ByConnection"
+            $PbirContent.datasetReference = @{
+                byConnection = @{
+                    connectionString = $null
+                    pbiServiceModelId = $SemanticModelId
+                    pbiModelVirtualServerName = "sobe_wowvirtualserver"
+                    pbiModelDatabaseName = $SemanticModelId
+                    name = "EntityDataSource"
+                    connectionDetails = @{
+                        protocol = "tds"
+                        address = @{
+                            server = "sobe_wowvirtualserver"
+                            database = $SemanticModelId
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    # Also check for dataSource references
+    if ($PbirContent.dataSources) {
+        foreach ($dataSource in $PbirContent.dataSources) {
+            if ($dataSource.connectionDetails -and $dataSource.connectionDetails.path) {
+                Write-Host "Converting data source path reference to connection"
+                $dataSource.connectionDetails = @{
+                    protocol = "tds"
+                    address = @{
+                        server = "sobe_wowvirtualserver" 
+                        database = $SemanticModelId
+                    }
+                }
+                $dataSource.datasourceId = $SemanticModelId
+            }
+        }
+    }
+    
+    # Handle model references in pages or other sections
+    if ($PbirContent.config -and $PbirContent.config.version) {
+        # Ensure we're using the latest config version that supports byConnection
+        Write-Host "PBIR config version: $($PbirContent.config.version)"
+    }
+    
+    return $PbirContent
 }
 
 function Deploy-PBIPUsingFabricAPI {
