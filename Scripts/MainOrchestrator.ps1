@@ -495,7 +495,7 @@ function Deploy-SemanticModel {
             Write-Host "✓ Semantic model created successfully (ID: $($createResp.id))"
             $deployedModelId =  $createResp.id 
             $deployedModelName = $createResp.displayName 
-            # return @{ Success = $true; ModelId = $createResp.id }
+            return @{ Success = $true; ModelId = $createResp.id }
         }
 
     } catch {
@@ -512,7 +512,7 @@ function Deploy-SemanticModel {
             #  "Content-Type" = "application/json"
         }
         Invoke-RestMethod -Uri $refreshUrl -Method Post -Headers $refreshHeaders -Body $refreshPayload
-        # Invoke-RestMethod -Uri $refreshUrl -Method Post -Headers $headers
+        Invoke-RestMethod -Uri $refreshUrl -Method Post -Headers $headers
         Write-Host "✓ Refresh triggered (Fabric PBIP model)"
         
          try {
