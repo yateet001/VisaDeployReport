@@ -568,9 +568,9 @@ function Deploy-Report {
             $bytes = [System.IO.File]::ReadAllBytes($file.FullName)
             $b64 = [Convert]::ToBase64String($bytes)
             $parts += @{
-                path       = $relativePath
-                payload    = $b64
-                payloadType= 'InlineBase64'
+                path        = $relativePath
+                payload     = $b64
+                payloadType = 'InlineBase64'
             }
         }
 
@@ -599,26 +599,33 @@ function Deploy-Report {
         $createUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/items"
 
         try {
-            $response = Invoke-RestMethod -Uri $createUrl -Method Post -Body $deploymentPayloadJson -Headers $headers
+            $response = Invoke-RestMethod -Uri $createUrl -Method Post -Body $deploymentPayloadJson -Headers $headers -ErrorAction Stop
+
+            Start-Sleep -Seconds 5  # small delay to allow Fabric to finalize
+
             Write-Host "✅ Report deployed successfully"
 
             # 🔑 Extract Report ID safely
             $reportId = $null
-            if ($response.id) {
-                $reportId = $response.id
-            } elseif ($response.value -and $response.value[0].id) {
-                $reportId = $response.value[0].id
+            if ($null -ne $response) {
+                if ($response.id) {
+                    $reportId = $response.id
+                } elseif ($response.value -and $response.value[0].id) {
+                    $reportId = $response.value[0].id
+                }
             }
 
             if (-not $reportId) {
-                throw "❌ Report created but ID not found in response. Full Response: $(ConvertTo-Json $response -Depth 50)"
+                throw "❌ Report created but ID not found in response. Full Response: $(ConvertTo-Json $response -Depth 50 -Compress)"
             }
 
             Write-Host "Report ID: $reportId"
             return $reportId
         }
         catch {
-            $statusCode = $_.Exception.Response.StatusCode.Value__
+            $statusCode = $null
+            try { $statusCode = $_.Exception.Response.StatusCode.Value__ } catch {}
+
             if ($statusCode -eq 409) {
                 Write-Host "⚠️ Report already exists, updating definition..."
 
@@ -637,7 +644,7 @@ function Deploy-Report {
                         }
                     } | ConvertTo-Json -Depth 50
 
-                    Invoke-RestMethod -Uri $updateUrl -Method Post -Body $updatePayload -Headers $headers
+                    Invoke-RestMethod -Uri $updateUrl -Method Post -Body $updatePayload -Headers $headers -ErrorAction Stop
                     Write-Host "✅ Report updated successfully"
                     return $existingReport.id
                 }
@@ -646,7 +653,7 @@ function Deploy-Report {
                 }
             }
             else {
-                throw "❌ Report creation failed: $($_.Exception.Message)"
+                throw "❌ Report creation failed. Status: $statusCode Message: $($_.Exception.Message)"
             }
         }
     }
