@@ -599,7 +599,7 @@ function Deploy-Report {
         $createUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/items"
 
         try {
-        $response = Invoke-RestMethod -Uri $createUrl -Method Post -Headers $headers -Body ($payload | ConvertTo-Json -Depth 10)
+        $response = Invoke-RestMethod -Uri $createUrl -Method Post -Headers $headers -Body $deploymentPayloadJson
         $response | ConvertTo-Json -Depth 10 | Out-File "report_deploy_response.json"
             Start-Sleep -Seconds 5  # small delay to allow Fabric to finalize
 
