@@ -480,7 +480,7 @@ function Deploy-SemanticModel {
             Write-Host "✓ Semantic model updated successfully"
             $deployedModelId = $existingModel.id
             $deployedModelName = $existingModel.displayName
-            # return @{ Success = $true; ModelId = $existingModel.id }
+            return @{ Success = $true; ModelId = $existingModel.id }
         }
         else {
             Write-Host "No existing model found → creating new semantic model..."
@@ -495,7 +495,7 @@ function Deploy-SemanticModel {
             Write-Host "✓ Semantic model created successfully (ID: $($createResp.id))"
             $deployedModelId =  $createResp.id 
             $deployedModelName = $createResp.displayName 
-            # return @{ Success = $true; ModelId = $createResp.id }
+            return @{ Success = $true; ModelId = $createResp.id }
         }
 
     } catch {
