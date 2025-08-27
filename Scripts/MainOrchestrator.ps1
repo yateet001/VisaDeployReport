@@ -551,24 +551,23 @@ function Deploy-Report {
     )
     
     try {
-        Write-Host "Deploying report: $ReportName"
+        Write-Host "--- Deploying report: $ReportName ---"
         
         $reportJsonFile = Join-Path $ReportFolder "report.json"
         if (-not (Test-Path $reportJsonFile)) {
             throw "report.json file not found in report folder"
         }
 
-        # Build complete parts list from the report folder (include StaticResources and others)
+        # Collect all files except .platform folder
         $allFiles = Get-ChildItem -Path $ReportFolder -Recurse -File | Where-Object { $_.FullName -notmatch "\\.platform($|\\)" }
         $parts = @()
         foreach ($file in $allFiles) {
-            $relativePath = ($file.FullName.Substring($ReportFolder.Length) -replace '^[\\/]+','')
-            $relativePath = $relativePath -replace '\\','/'
+            $relativePath = ($file.FullName.Substring($ReportFolder.Length) -replace '^[\\/]+','') -replace '\\','/'
             $bytes = [System.IO.File]::ReadAllBytes($file.FullName)
             $b64 = [Convert]::ToBase64String($bytes)
             $parts += @{
-                path = $relativePath
-                payload = $b64
+                path        = $relativePath
+                payload     = $b64
                 payloadType = 'InlineBase64'
             }
         }
@@ -581,70 +580,71 @@ function Deploy-Report {
         
         # Add semantic model binding if provided
         if ($SemanticModelId) {
-            $itemsReportPayload["boundDatasetId"] = $SemanticModelId   # ✅ fix here
+            $itemsReportPayload["boundDatasetId"] = $SemanticModelId
             Write-Host "Binding report to semantic model ID: $SemanticModelId"
         }
 
         $deploymentPayloadJson = $itemsReportPayload | ConvertTo-Json -Depth 50
-        Write-Host "Payload JSON:" $deploymentPayloadJson   # ✅ log full payload
 
         $headers = @{ 
             "Authorization" = "Bearer $AccessToken"
             "Content-Type"  = "application/json"
         }
-        
-        try {
-            if (-not $SemanticModelId) {
-                # Try to resolve dataset id by name
-                Write-Warning "SemanticModelId not provided; resolving by report/semantic model name..."
-                $listUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels"
-                $listResponse = Invoke-RestMethod -Uri $listUrl -Method Get -Headers $headers
-                $existingModel = $listResponse.value | Where-Object { $_.displayName -eq $ReportName } | Select-Object -First 1
-                if ($existingModel) { 
-                    $SemanticModelId = $existingModel.id 
-                    $itemsReportPayload["boundDatasetId"] = $SemanticModelId
-                    Write-Host "Resolved semantic model ID: $SemanticModelId"
-                }
-            }
-            if (-not $SemanticModelId) {
-                throw "Dataset (SemanticModel) id is missing and could not be resolved."
-            }
 
-            # Prefer Items API for PBIP report creation
-            $createUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/items"
-            # $response = Invoke-RestMethod -Uri $createUrl -Method Post -Body $deploymentPayloadJson -Headers $headers
-            $rawResponse = Invoke-WebRequest -Uri $createUrl -Method Post -Body $deploymentPayloadJson -Headers $headers
-            Write-Host "Raw Response Status: $($rawResponse.StatusCode)"
-            Write-Host "Raw Response Body: $($rawResponse.Content)"
-            $response = $rawResponse.Content | ConvertFrom-Json
+        # Create Report (Async)
+        $createUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/items"
+        $rawResponse = Invoke-WebRequest -Uri $createUrl -Method Post -Body $deploymentPayloadJson -Headers $headers -ResponseHeadersVariable respHeaders -StatusCodeVariable statusCode
 
-            Write-Host "✓ Report deployed successfully"
-            Write-Host "Full API response:" ($response | ConvertTo-Json -Depth 50)
-            if ($response.id) {
-                Write-Host "Report ID: $($response.id)"
-                return $true
-            } else {
-                Write-Warning "API response did not contain a report ID."
-                return $false
-            }
-        } catch {
-            $statusCode = $null
-            $errBody = $null
-            try { $statusCode = $_.Exception.Response.StatusCode } catch {}
+        Write-Host "Raw Response Status: $statusCode"
+
+        # Extract operationId
+        $operationId = $null
+        if ($respHeaders["x-ms-operation-id"]) {
+            $operationId = $respHeaders["x-ms-operation-id"]
+        } else {
             try {
-                $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
-                $errBody = $reader.ReadToEnd()
+                $parsed = $rawResponse.Content | ConvertFrom-Json
+                if ($parsed.operationId) { $operationId = $parsed.operationId }
             } catch {}
-            
-            Write-Error "Report creation failed. Status: $statusCode Body: $errBody"
+        }
+
+        if (-not $operationId) {
+            Write-Warning "No operationId found in response. Cannot poll deployment status."
             return $false
         }
-        
-    } catch {
+
+        Write-Host "Deployment started. Polling operation $operationId for up to 2 minutes..."
+        $pollUrl = "https://api.fabric.microsoft.com/v1/operations/$operationId"
+        $timeout = (Get-Date).AddMinutes(2)
+        $delay   = 5
+
+        do {
+            Start-Sleep -Seconds $delay
+            $opResponse = Invoke-RestMethod -Uri $pollUrl -Method Get -Headers $headers
+
+            Write-Host "Polling status = $($opResponse.status)"
+
+            if ($opResponse.status -eq "Succeeded") {
+                $reportId = $opResponse.result.resourceId
+                Write-Host "✓ Report deployed successfully"
+                Write-Host "Report ID: $reportId"
+                return $true
+            }
+            elseif ($opResponse.status -eq "Failed") {
+                Write-Error "Report deployment failed: $($opResponse.error.code) - $($opResponse.error.message)"
+                return $false
+            }
+        } while ((Get-Date) -lt $timeout)
+
+        Write-Error "Report deployment polling timed out after 2 minutes"
+        return $false
+    }
+    catch {
         Write-Error "Failed to deploy report: $_"
         return $false
     }
 }
+
 
 
 function Deploy-PBIPUsingFabricAPI {
