@@ -559,7 +559,7 @@ function Deploy-Report {
         }
 
         # Build complete parts list from the report folder (include StaticResources and others)
-        $allFiles = Get-ChildItem -Path $ReportFolder -Recurse -File
+        $allFiles = Get-ChildItem -Path $ReportFolder -Recurse -File | Where-Object { $_.FullName -notmatch "\\.platform($|\\)" }
         $parts = @()
         foreach ($file in $allFiles) {
             $relativePath = ($file.FullName.Substring($ReportFolder.Length) -replace '^[\\/]+','')
@@ -612,7 +612,12 @@ function Deploy-Report {
 
             # Prefer Items API for PBIP report creation
             $createUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/items"
-            $response = Invoke-RestMethod -Uri $createUrl -Method Post -Body $deploymentPayloadJson -Headers $headers
+            # $response = Invoke-RestMethod -Uri $createUrl -Method Post -Body $deploymentPayloadJson -Headers $headers
+            $rawResponse = Invoke-WebRequest -Uri $createUrl -Method Post -Body $deploymentPayloadJson -Headers $headers
+            Write-Host "Raw Response Status: $($rawResponse.StatusCode)"
+            Write-Host "Raw Response Body: $($rawResponse.Content)"
+            $response = $rawResponse.Content | ConvertFrom-Json
+
             Write-Host "✓ Report deployed successfully"
             Write-Host "Full API response:" ($response | ConvertTo-Json -Depth 50)
             if ($response.id) {
