@@ -566,9 +566,9 @@ function Deploy-Report {
         # Resolve SemanticModelId if not provided
         if (-not $SemanticModelId) {
             Write-Host "Resolving SemanticModelId by name..."
-            $listUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels"
+            $listUrl = "https://api.powerbi.com/v1.0/myorg/groups/$WorkspaceId/datasets"
             $listResponse = Invoke-RestMethod -Uri $listUrl -Method Get -Headers $headers
-            $existingModel = $listResponse.value | Where-Object { $_.displayName -eq $ReportName } | Select-Object -First 1
+            $existingModel = $listResponse.value | Where-Object { $_.name -eq $ReportName } | Select-Object -First 1
             if ($existingModel) { 
                 $SemanticModelId = $existingModel.id 
                 Write-Host "Found SemanticModelId: $SemanticModelId"
@@ -580,343 +580,138 @@ function Deploy-Report {
         }
 
         # Check if report already exists first
-        $listReportsUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/reports"
+        $listReportsUrl = "https://api.powerbi.com/v1.0/myorg/groups/$WorkspaceId/reports"
         $existingReports = Invoke-RestMethod -Uri $listReportsUrl -Method Get -Headers $headers
-        $existingReport = $existingReports.value | Where-Object { $_.displayName -eq $ReportName }
+        $existingReport = $existingReports.value | Where-Object { $_.name -eq $ReportName }
         
         if ($existingReport) {
-            Write-Host "Report already exists (ID: $($existingReport.id)) - updating..."
-            
-            # Build parts for update
-            $allFiles = Get-ChildItem -Path $ReportFolder -Recurse -File
-            $parts = @()
-            foreach ($file in $allFiles) {
-                $relativePath = ($file.FullName.Substring($ReportFolder.Length) -replace '^[\\/]+','')
-                $relativePath = $relativePath -replace '\\','/'
-                $bytes = [System.IO.File]::ReadAllBytes($file.FullName)
-                $b64 = [Convert]::ToBase64String($bytes)
-                $parts += @{
-                    path = $relativePath
-                    payload = $b64
-                    payloadType = 'InlineBase64'
-                }
-            }
-            
-            $updateUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/reports/$($existingReport.id)/updateDefinition"
-            $updatePayload = @{
-                definition = @{ parts = $parts }
-            } | ConvertTo-Json -Depth 50
+            Write-Host "Report already exists (ID: $($existingReport.id)) - will update after creation..."
+            # We'll handle updates after creating the PBIX
+        }
 
-            try {
-                $updateResponse = Invoke-RestMethod -Uri $updateUrl -Method Post -Body $updatePayload -Headers $headers
-                Write-Host "✓ Report updated successfully"
-                Write-Host "Update response: $($updateResponse | ConvertTo-Json -Depth 3)"
-                return $true
-            } catch {
-                Write-Warning "Report update failed: $($_.Exception.Message)"
-                if ($_.Exception.Response) {
-                    $errorStream = $_.Exception.Response.GetResponseStream()
-                    $reader = New-Object System.IO.StreamReader($errorStream)
-                    $errorBody = $reader.ReadToEnd()
-                    Write-Warning "Error details: $errorBody"
-                }
-                return $false
-            }
+        # Step 1: Convert PBIR to PBIX
+        Write-Host "Converting PBIR to PBIX format..."
+        $pbixPath = Convert-PbirToPbix -ReportFolder $ReportFolder -SemanticModelId $SemanticModelId -ReportName $ReportName
+        
+        if (-not $pbixPath -or -not (Test-Path $pbixPath)) {
+            throw "Failed to create PBIX file"
+        }
+
+        # Step 2: Upload PBIX using Power BI REST API
+        Write-Host "Uploading PBIX to Power BI..."
+        $uploadResult = Import-PbixToPowerBI -PbixPath $pbixPath -WorkspaceId $WorkspaceId -AccessToken $AccessToken -ReportName $ReportName -DatasetId $SemanticModelId
+
+        # Step 3: Clean up temporary PBIX file
+        try {
+            Remove-Item -Path $pbixPath -Force
+            Write-Host "Cleaned up temporary PBIX file"
+        } catch {
+            Write-Warning "Could not clean up temporary file: $pbixPath"
+        }
+
+        if ($uploadResult.success) {
+            Write-Host "✓ Report deployed successfully via PBIX conversion (ID: $($uploadResult.reportId))"
+            return $true
         } else {
-            Write-Host "Creating new report..."
-            
-            # Build parts for creation and fix semantic model references
-            $allFiles = Get-ChildItem -Path $ReportFolder -Recurse -File
-            $parts = @()
-            foreach ($file in $allFiles) {
-                $relativePath = ($file.FullName.Substring($ReportFolder.Length) -replace '^[\\/]+','')
-                $relativePath = $relativePath -replace '\\','/'
-                
-                # Special handling for definition.pbir file to fix semantic model references
-                if ($relativePath -eq "definition.pbir") {
-                    Write-Host "Processing definition.pbir file to fix semantic model references..."
-                    try {
-                        $pbirContent = Get-Content -Path $file.FullName -Raw | ConvertFrom-Json
-                        
-                        # Convert ByPath references to ByConnection using helper function
-                        $pbirContent = Convert-PbirReferences -PbirContent $pbirContent -SemanticModelId $SemanticModelId
-                        
-                        # Convert back to JSON and encode
-                        $modifiedContent = $pbirContent | ConvertTo-Json -Depth 50
-                        $bytes = [System.Text.Encoding]::UTF8.GetBytes($modifiedContent)
-                        
-                        Write-Host "✓ Successfully converted PBIR references"
-                    } catch {
-                        Write-Warning "Error processing PBIR file: $($_.Exception.Message)"
-                        # Fall back to original file content if conversion fails
-                        $bytes = [System.IO.File]::ReadAllBytes($file.FullName)
-                    }
-                } else {
-                    # For other files, read as-is
-                    $bytes = [System.IO.File]::ReadAllBytes($file.FullName)
-                }
-                
-                $b64 = [Convert]::ToBase64String($bytes)
-                $parts += @{
-                    path = $relativePath
-                    payload = $b64
-                    payloadType = 'InlineBase64'
-                }
-            }
-
-            # Try Fabric Items API first
-            try {
-                Write-Host "Attempting creation via Fabric Items API..."
-                $createItemUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/items"
-                
-                # Test the endpoint first
-                Write-Host "Testing workspace access..."
-                $testUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId"
-                try {
-                    $workspaceInfo = Invoke-RestMethod -Uri $testUrl -Method Get -Headers $headers
-                    Write-Host "Workspace found: $($workspaceInfo.displayName)"
-                } catch {
-                    Write-Error "Cannot access workspace $WorkspaceId - Error: $($_.Exception.Message)"
-                    return $false
-                }
-                
-                $itemPayload = @{
-                    displayName = $ReportName
-                    type = "Report"
-                    definition = @{
-                        format = "PBIR"
-                        parts = $parts
-                    }
-                }
-                
-                # Make the API call with enhanced error handling
-                try {
-                    $response = Invoke-WebRequest -Uri $createItemUrl -Method Post -Body ($itemPayload | ConvertTo-Json -Depth 50) -Headers $headers -UseBasicParsing
-                    
-                    Write-Host "HTTP Status: $($response.StatusCode)"
-                    Write-Host "Response Headers: $($response.Headers | ConvertTo-Json)"
-                    Write-Host "Raw Response Content: $($response.Content)"
-                    
-                    # Handle async operations - check for Location header
-                    if ($response.Headers["Location"]) {
-                        $operationUrl = $response.Headers["Location"]
-                        Write-Host "Operation started, polling status at: $operationUrl"
-                        
-                        # Wait for the operation to complete
-                        $operationResult = Wait-ForOperation -OperationUrl $operationUrl -Headers $headers -MaxWaitTimeMinutes 3
-                        
-                        if ($operationResult -and $operationResult.result -and $operationResult.result.id) {
-                            Write-Host "✓ Report created successfully via async operation (ID: $($operationResult.result.id))"
-                            return $true
-                        }
-                    }
-                    
-                    # Try to parse JSON response
-                    if ($response.Content) {
-                        $jsonResponse = $response.Content | ConvertFrom-Json
-                        Write-Host "Parsed JSON Response: $($jsonResponse | ConvertTo-Json -Depth 5)"
-                        
-                        # Check for various possible ID fields
-                        $reportId = $null
-                        if ($jsonResponse.id) {
-                            $reportId = $jsonResponse.id
-                        } elseif ($jsonResponse.objectId) {
-                            $reportId = $jsonResponse.objectId
-                        } elseif ($jsonResponse.reportId) {
-                            $reportId = $jsonResponse.reportId
-                        }
-                        
-                        if ($reportId) {
-                            Write-Host "✓ Report created successfully via Fabric Items API (ID: $reportId)"
-                            return $true
-                        }
-                    }
-                    
-                    # If we get here, the API call succeeded but we can't find an ID
-                    Write-Warning "Fabric Items API succeeded but no ID found in response"
-                    
-                } catch {
-                    Write-Error "Fabric Items API request failed: $($_.Exception.Message)"
-                    if ($_.Exception.Response) {
-                        $errorResponse = $_.Exception.Response
-                        Write-Error "Status Code: $($errorResponse.StatusCode)"
-                        Write-Error "Status Description: $($errorResponse.StatusDescription)"
-                        
-                        try {
-                            $errorStream = $errorResponse.GetResponseStream()
-                            $reader = New-Object System.IO.StreamReader($errorStream)
-                            $errorBody = $reader.ReadToEnd()
-                            Write-Error "Error Body: $errorBody"
-                        } catch {
-                            Write-Error "Could not read error response body"
-                        }
-                    }
-                    throw
-                }
-                
-            } catch {
-                Write-Warning "Fabric Items API failed: $($_.Exception.Message)"
-                Write-Host "Trying alternative approach with createReport endpoint..."
-                
-                # Try the createReport endpoint directly
-                try {
-                    $createReportUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/reports"
-                    
-                    # Simplified payload for report creation
-                    $reportPayload = @{
-                        displayName = $ReportName
-                        definition = @{
-                            format = "PBIR"
-                            parts = $parts
-                        }
-                    }
-                    
-                    Write-Host "Attempting direct report creation..."
-                    $reportResponse = Invoke-RestMethod -Uri $createReportUrl -Method Post -Body ($reportPayload | ConvertTo-Json -Depth 50) -Headers $headers
-                    
-                    Write-Host "Direct report API Response: $($reportResponse | ConvertTo-Json -Depth 5)"
-                    
-                    if ($reportResponse.id) {
-                        Write-Host "✓ Report created successfully via direct report API (ID: $($reportResponse.id))"
-                        return $true
-                    }
-                    
-                } catch {
-                    Write-Warning "Direct report API also failed: $($_.Exception.Message)"
-                }
-                
-                # Final fallback: Try Power BI Import API with proper multipart form
-                Write-Host "Falling back to Power BI Import API..."
-                try {
-                    # First, check if we can access the workspace via Power BI API
-                    $powerBIHeaders = @{ 
-                        "Authorization" = "Bearer $AccessToken"
-                    }
-                    
-                    $workspaceCheckUrl = "https://api.powerbi.com/v1.0/myorg/groups/$WorkspaceId"
-                    try {
-                        $workspaceCheck = Invoke-RestMethod -Uri $workspaceCheckUrl -Method Get -Headers $powerBIHeaders
-                        Write-Host "Power BI workspace accessible: $($workspaceCheck.name)"
-                    } catch {
-                        Write-Error "Cannot access workspace via Power BI API: $($_.Exception.Message)"
-                        return $false
-                    }
-                    
-                    # For PBIR files, we need to use the import endpoint differently
-                    # This is a complex process that might require converting PBIR to PBIX first
-                    Write-Warning "PBIR to Power BI conversion not yet implemented in this script"
-                    Write-Host "Consider using Power BI Desktop to publish the report, or implement PBIR to PBIX conversion"
-                    
-                    return $false
-                    
-                } catch {
-                    Write-Error "Power BI fallback also failed: $($_.Exception.Message)"
-                    return $false
-                }
-            }
+            Write-Error "Failed to deploy report: $($uploadResult.error)"
+            return $false
         }
         
     } catch {
         Write-Error "Failed to deploy report: $_"
-        if ($_.Exception.Response) {
-            $errorStream = $_.Exception.Response.GetResponseStream()
-            $reader = New-Object System.IO.StreamReader($errorStream)
-            $errorBody = $reader.ReadToEnd()
-            Write-Error "Detailed error: $errorBody"
-        }
         return $false
     }
 }
 
-# Helper function to wait for long-running operations
-function Wait-ForOperation {
+function Convert-PbirToPbix {
     param(
-        [string]$OperationUrl,
-        [hashtable]$Headers,
-        [int]$MaxWaitTimeMinutes = 3
-    )
-    
-    Write-Host "Waiting for long-running operation to complete..."
-    $maxWaitTime = (Get-Date).AddMinutes($MaxWaitTimeMinutes)
-    $attempt = 1
-    
-    do {
-        Write-Host "Checking operation status (attempt $attempt)..."
-        Start-Sleep -Seconds 10
-        
-        try {
-            $operationResponse = Invoke-RestMethod -Uri $OperationUrl -Method Get -Headers $Headers
-            Write-Host "Operation response: $($operationResponse | ConvertTo-Json -Depth 3)"
-            
-            if ($operationResponse.status) {
-                Write-Host "Operation status: $($operationResponse.status)"
-                
-                if ($operationResponse.status -eq "Succeeded" -or $operationResponse.status -eq "Completed") {
-                    Write-Host "✓ Operation completed successfully"
-                    return $operationResponse
-                } elseif ($operationResponse.status -eq "Failed" -or $operationResponse.status -eq "Error") {
-                    $errorMsg = if ($operationResponse.error) { $operationResponse.error } else { "Unknown error" }
-                    throw "Operation failed: $errorMsg"
-                } elseif ($operationResponse.status -eq "Running" -or $operationResponse.status -eq "InProgress") {
-                    Write-Host "Operation still running..."
-                } else {
-                    Write-Host "Unknown status: $($operationResponse.status)"
-                }
-            } else {
-                # Some APIs don't return a status field, check for completion differently
-                if ($operationResponse.result -or $operationResponse.id) {
-                    Write-Host "✓ Operation appears to be completed (no status field but has result/id)"
-                    return $operationResponse
-                }
-            }
-        } catch {
-            Write-Warning "Error checking operation status: $($_.Exception.Message)"
-            # Continue trying unless it's a 404 (operation not found)
-            if ($_.Exception.Response -and $_.Exception.Response.StatusCode -eq 404) {
-                throw "Operation not found (404) - may have completed or expired"
-            }
-        }
-        
-        $attempt++
-    } while ((Get-Date) -lt $maxWaitTime)
-    
-    throw "Operation timed out after $MaxWaitTimeMinutes minutes"
-}
-
-# Additional helper function to verify workspace access
-function Test-WorkspaceAccess {
-    param(
-        [string]$WorkspaceId,
-        [hashtable]$Headers
+        [string]$ReportFolder,
+        [string]$SemanticModelId,
+        [string]$ReportName
     )
     
     try {
-        $workspaceUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId"
-        $workspace = Invoke-RestMethod -Uri $workspaceUrl -Method Get -Headers $Headers
-        Write-Host "✓ Workspace access verified: $($workspace.displayName)"
-        return $true
+        Write-Host "Starting PBIR to PBIX conversion..."
+        
+        # Create temporary directory for PBIX construction
+        $tempDir = Join-Path $env:TEMP "PBIRtoPBIX_$([System.Guid]::NewGuid().ToString('N').Substring(0,8))"
+        New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+        
+        # PBIX is essentially a ZIP file with specific structure
+        $pbixPath = Join-Path $env:TEMP "$ReportName.pbix"
+        
+        try {
+            # Step 1: Process definition.pbir file
+            $definitionFile = Join-Path $ReportFolder "definition.pbir"
+            if (Test-Path $definitionFile) {
+                $pbirContent = Get-Content -Path $definitionFile -Raw | ConvertFrom-Json
+                
+                # Convert ByPath references to proper Power BI connection format
+                $pbirContent = Convert-PbirForPowerBI -PbirContent $pbirContent -SemanticModelId $SemanticModelId
+                
+                # Save modified definition
+                $modifiedDefinition = $pbirContent | ConvertTo-Json -Depth 50
+                $definitionPath = Join-Path $tempDir "Report\definition.pbir"
+                New-Item -ItemType Directory -Path (Split-Path $definitionPath) -Force | Out-Null
+                Set-Content -Path $definitionPath -Value $modifiedDefinition -Encoding UTF8
+            }
+            
+            # Step 2: Copy all other files maintaining structure
+            $allFiles = Get-ChildItem -Path $ReportFolder -Recurse -File
+            foreach ($file in $allFiles) {
+                $relativePath = $file.FullName.Substring($ReportFolder.Length).TrimStart('\', '/')
+                $targetPath = Join-Path $tempDir "Report\$relativePath"
+                
+                # Skip definition.pbir as we already processed it
+                if ($relativePath -eq "definition.pbir") { continue }
+                
+                $targetDir = Split-Path $targetPath
+                if (-not (Test-Path $targetDir)) {
+                    New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
+                }
+                
+                Copy-Item -Path $file.FullName -Destination $targetPath -Force
+            }
+            
+            # Step 3: Create required PBIX metadata files
+            Create-PbixMetadata -TempDir $tempDir -ReportName $ReportName
+            
+            # Step 4: Create ZIP file (PBIX)
+            Write-Host "Creating PBIX archive..."
+            Add-Type -AssemblyName System.IO.Compression.FileSystem
+            [System.IO.Compression.ZipFile]::CreateFromDirectory($tempDir, $pbixPath)
+            
+            Write-Host "✓ Successfully created PBIX file: $pbixPath"
+            return $pbixPath
+            
+        } finally {
+            # Clean up temp directory
+            if (Test-Path $tempDir) {
+                Remove-Item -Path $tempDir -Recurse -Force
+            }
+        }
+        
     } catch {
-        Write-Error "✗ Cannot access workspace $WorkspaceId`: $($_.Exception.Message)"
-        return $false
+        Write-Error "PBIR to PBIX conversion failed: $($_.Exception.Message)"
+        return $null
     }
 }
 
-# Helper function to convert PBIR ByPath references to ByConnection
-function Convert-PbirReferences {
+function Convert-PbirForPowerBI {
     param(
         [object]$PbirContent,
         [string]$SemanticModelId
     )
     
-    Write-Host "Converting PBIR semantic model references..."
+    Write-Host "Converting PBIR references for Power BI compatibility..."
     
-    # Handle different possible reference structures
+    # Handle dataset references - convert to proper Power BI format
     if ($PbirContent.datasetReference) {
         if ($PbirContent.datasetReference.byPath) {
-            Write-Host "Found ByPath reference, converting to ByConnection"
+            Write-Host "Converting ByPath reference to Power BI dataset reference"
             $PbirContent.datasetReference = @{
                 byConnection = @{
-                    connectionString = $null
+                    connectionString = "Data Source=powerbi://api.powerbi.com/v1.0/myorg/$SemanticModelId;Initial Catalog=$SemanticModelId"
                     pbiServiceModelId = $SemanticModelId
                     pbiModelVirtualServerName = "sobe_wowvirtualserver"
                     pbiModelDatabaseName = $SemanticModelId
@@ -927,36 +722,259 @@ function Convert-PbirReferences {
                             server = "sobe_wowvirtualserver"
                             database = $SemanticModelId
                         }
+                        connectionMethod = "DirectQuery"
+                        singleSignOnType = "None"
                     }
                 }
             }
         }
     }
     
-    # Also check for dataSource references
+    # Handle data sources
     if ($PbirContent.dataSources) {
-        foreach ($dataSource in $PbirContent.dataSources) {
+        for ($i = 0; $i -lt $PbirContent.dataSources.Count; $i++) {
+            $dataSource = $PbirContent.dataSources[$i]
             if ($dataSource.connectionDetails -and $dataSource.connectionDetails.path) {
-                Write-Host "Converting data source path reference to connection"
-                $dataSource.connectionDetails = @{
-                    protocol = "tds"
-                    address = @{
-                        server = "sobe_wowvirtualserver" 
-                        database = $SemanticModelId
+                Write-Host "Converting data source $i to Power BI format"
+                $PbirContent.dataSources[$i] = @{
+                    datasourceId = $SemanticModelId
+                    connectionDetails = @{
+                        protocol = "tds"
+                        address = @{
+                            server = "sobe_wowvirtualserver"
+                            database = $SemanticModelId
+                        }
+                        connectionMethod = "DirectQuery"
+                        singleSignOnType = "None"
                     }
+                    datasourceType = "PowerBIDatasets"
+                    connectionString = "Data Source=powerbi://api.powerbi.com/v1.0/myorg/$SemanticModelId;Initial Catalog=$SemanticModelId"
                 }
-                $dataSource.datasourceId = $SemanticModelId
             }
         }
-    }
-    
-    # Handle model references in pages or other sections
-    if ($PbirContent.config -and $PbirContent.config.version) {
-        # Ensure we're using the latest config version that supports byConnection
-        Write-Host "PBIR config version: $($PbirContent.config.version)"
     }
     
     return $PbirContent
+}
+
+function Create-PbixMetadata {
+    param(
+        [string]$TempDir,
+        [string]$ReportName
+    )
+    
+    # Create [Content_Types].xml
+    $contentTypes = @'
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+    <Default Extension="json" ContentType="application/json"/>
+    <Default Extension="pbir" ContentType="application/json"/>
+    <Override PartName="/Report/Layout" ContentType="application/json"/>
+    <Override PartName="/Report/LinguisticSchema" ContentType="application/xml"/>
+</Types>
+'@
+    Set-Content -Path (Join-Path $TempDir "[Content_Types].xml") -Value $contentTypes -Encoding UTF8
+    
+    # Create _rels/.rels
+    $relsDir = Join-Path $TempDir "_rels"
+    New-Item -ItemType Directory -Path $relsDir -Force | Out-Null
+    
+    $rels = @'
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+    <Relationship Id="rId1" Type="http://schemas.microsoft.com/powerbx/2013/powerbi-report" Target="Report"/>
+</Relationships>
+'@
+    Set-Content -Path (Join-Path $relsDir ".rels") -Value $rels -Encoding UTF8
+    
+    # Create SecurityBindings (empty but required)
+    $securityBindings = "[]"
+    Set-Content -Path (Join-Path $TempDir "SecurityBindings") -Value $securityBindings -Encoding UTF8
+    
+    # Create Settings
+    $settings = @{
+        version = "1.0"
+        legacyDataSources = @()
+    } | ConvertTo-Json -Depth 10
+    Set-Content -Path (Join-Path $TempDir "Settings") -Value $settings -Encoding UTF8
+    
+    Write-Host "✓ Created PBIX metadata files"
+}
+
+function Import-PbixToPowerBI {
+    param(
+        [string]$PbixPath,
+        [string]$WorkspaceId, 
+        [string]$AccessToken,
+        [string]$ReportName,
+        [string]$DatasetId
+    )
+    
+    try {
+        Write-Host "Importing PBIX to Power BI workspace..."
+        
+        # Prepare headers for multipart form data
+        $boundary = [System.Guid]::NewGuid().ToString()
+        $headers = @{
+            "Authorization" = "Bearer $AccessToken"
+            "Content-Type" = "multipart/form-data; boundary=$boundary"
+        }
+        
+        # Read PBIX file as bytes
+        $pbixBytes = [System.IO.File]::ReadAllBytes($PbixPath)
+        
+        # Create multipart form data
+        $bodyTemplate = @"
+--$boundary
+Content-Disposition: form-data; name="file"; filename="$ReportName.pbix"
+Content-Type: application/octet-stream
+
+{0}
+--$boundary
+Content-Disposition: form-data; name="datasetDisplayName"
+
+$ReportName
+--$boundary
+Content-Disposition: form-data; name="nameConflict"
+
+CreateOrOverwrite
+--$boundary
+Content-Disposition: form-data; name="skipReport"
+
+false
+--$boundary--
+"@
+        
+        # Convert bytes to string for embedding (this is a simplified approach)
+        # For production, you'd want to use proper multipart encoding
+        $importUrl = "https://api.powerbi.com/v1.0/myorg/groups/$WorkspaceId/imports"
+        
+        # Alternative approach using Invoke-RestMethod with InFile parameter
+        try {
+            # Use PowerShell's built-in multipart form support
+            $form = @{
+                file = Get-Item $PbixPath
+                datasetDisplayName = $ReportName
+                nameConflict = "CreateOrOverwrite"
+                skipReport = "false"
+            }
+            
+            $simpleHeaders = @{
+                "Authorization" = "Bearer $AccessToken"
+            }
+            
+            Write-Host "Uploading PBIX file..."
+            $importResponse = Invoke-RestMethod -Uri $importUrl -Method Post -Form $form -Headers $simpleHeaders
+            
+            Write-Host "Import Response: $($importResponse | ConvertTo-Json -Depth 3)"
+            
+            if ($importResponse.id) {
+                Write-Host "Import started with ID: $($importResponse.id)"
+                
+                # Wait for import to complete
+                $importStatusUrl = "https://api.powerbi.com/v1.0/myorg/groups/$WorkspaceId/imports/$($importResponse.id)"
+                $maxWaitTime = (Get-Date).AddMinutes(5)
+                
+                do {
+                    Start-Sleep -Seconds 10
+                    Write-Host "Checking import status..."
+                    
+                    try {
+                        $statusResponse = Invoke-RestMethod -Uri $importStatusUrl -Method Get -Headers $simpleHeaders
+                        Write-Host "Import status: $($statusResponse.importState)"
+                        
+                        if ($statusResponse.importState -eq "Succeeded") {
+                            $reportId = $statusResponse.reports[0].id
+                            Write-Host "✓ Import completed successfully. Report ID: $reportId"
+                            
+                            # Rebind to existing dataset if different
+                            if ($DatasetId -and $statusResponse.datasets[0].id -ne $DatasetId) {
+                                Write-Host "Rebinding report to target dataset..."
+                                $rebindResult = Set-ReportDataset -WorkspaceId $WorkspaceId -ReportId $reportId -DatasetId $DatasetId -AccessToken $AccessToken
+                                if (-not $rebindResult) {
+                                    Write-Warning "Report created but rebinding to target dataset failed"
+                                }
+                            }
+                            
+                            return @{ success = $true; reportId = $reportId }
+                        } elseif ($statusResponse.importState -eq "Failed") {
+                            $errorMsg = if ($statusResponse.error) { $statusResponse.error.code + ": " + $statusResponse.error.message } else { "Unknown error" }
+                            return @{ success = $false; error = "Import failed: $errorMsg" }
+                        }
+                    } catch {
+                        Write-Warning "Error checking import status: $($_.Exception.Message)"
+                    }
+                    
+                } while ((Get-Date) -lt $maxWaitTime)
+                
+                return @{ success = $false; error = "Import timed out" }
+                
+            } else {
+                return @{ success = $false; error = "No import ID returned" }
+            }
+            
+        } catch {
+            Write-Error "PBIX upload failed: $($_.Exception.Message)"
+            if ($_.Exception.Response) {
+                $errorStream = $_.Exception.Response.GetResponseStream()
+                $reader = New-Object System.IO.StreamReader($errorStream)
+                $errorBody = $reader.ReadToEnd()
+                Write-Error "Upload error details: $errorBody"
+            }
+            return @{ success = $false; error = $_.Exception.Message }
+        }
+        
+    } catch {
+        return @{ success = $false; error = $_.Exception.Message }
+    }
+}
+
+function Set-ReportDataset {
+    param(
+        [string]$WorkspaceId,
+        [string]$ReportId,
+        [string]$DatasetId,
+        [string]$AccessToken
+    )
+    
+    try {
+        $rebindUrl = "https://api.powerbi.com/v1.0/myorg/groups/$WorkspaceId/reports/$ReportId/Rebind"
+        $rebindPayload = @{
+            datasetId = $DatasetId
+        } | ConvertTo-Json
+        
+        $headers = @{
+            "Authorization" = "Bearer $AccessToken"
+            "Content-Type" = "application/json"
+        }
+        
+        Invoke-RestMethod -Uri $rebindUrl -Method Post -Body $rebindPayload -Headers $headers
+        Write-Host "✓ Report successfully rebound to dataset $DatasetId"
+        return $true
+        
+    } catch {
+        Write-Error "Failed to rebind report: $($_.Exception.Message)"
+        return $false
+    }
+}
+
+# Helper function to verify workspace access
+function Test-PowerBIWorkspaceAccess {
+    param(
+        [string]$WorkspaceId,
+        [string]$AccessToken
+    )
+    
+    try {
+        $headers = @{ "Authorization" = "Bearer $AccessToken" }
+        $workspaceUrl = "https://api.powerbi.com/v1.0/myorg/groups/$WorkspaceId"
+        $workspace = Invoke-RestMethod -Uri $workspaceUrl -Method Get -Headers $headers
+        Write-Host "✓ Power BI workspace access verified: $($workspace.name)"
+        return $true
+    } catch {
+        Write-Error "✗ Cannot access Power BI workspace $WorkspaceId`: $($_.Exception.Message)"
+        return $false
+    }
 }
 
 function Deploy-PBIPUsingFabricAPI {
