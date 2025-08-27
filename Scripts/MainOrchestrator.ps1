@@ -552,17 +552,18 @@ function Deploy-Report {
     
     try {
         Write-Host "--- Deploying report: $ReportName ---"
-        
+
         $reportJsonFile = Join-Path $ReportFolder "report.json"
         if (-not (Test-Path $reportJsonFile)) {
             throw "report.json file not found in report folder"
         }
 
-        # Collect all files except .platform folder
+        # Build complete parts list (exclude .platform folder)
         $allFiles = Get-ChildItem -Path $ReportFolder -Recurse -File | Where-Object { $_.FullName -notmatch "\\.platform($|\\)" }
         $parts = @()
         foreach ($file in $allFiles) {
-            $relativePath = ($file.FullName.Substring($ReportFolder.Length) -replace '^[\\/]+','') -replace '\\','/'
+            $relativePath = ($file.FullName.Substring($ReportFolder.Length) -replace '^[\\/]+','')
+            $relativePath = $relativePath -replace '\\','/'
             $bytes = [System.IO.File]::ReadAllBytes($file.FullName)
             $b64 = [Convert]::ToBase64String($bytes)
             $parts += @{
@@ -578,68 +579,92 @@ function Deploy-Report {
             definition  = @{ format = 'PBIR'; parts = $parts }
         }
         
-        # Add semantic model binding if provided
         if ($SemanticModelId) {
             $itemsReportPayload["boundDatasetId"] = $SemanticModelId
             Write-Host "Binding report to semantic model ID: $SemanticModelId"
         }
 
         $deploymentPayloadJson = $itemsReportPayload | ConvertTo-Json -Depth 50
-
         $headers = @{ 
             "Authorization" = "Bearer $AccessToken"
             "Content-Type"  = "application/json"
         }
 
-        # Create Report (Async)
-        $createUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/items"
-        $rawResponse = Invoke-WebRequest -Uri $createUrl -Method Post -Body $deploymentPayloadJson -Headers $headers -ResponseHeadersVariable respHeaders -StatusCodeVariable statusCode
+        # Resolve Semantic Model Id if not provided
+        if (-not $SemanticModelId) {
+            Write-Warning "SemanticModelId not provided; resolving..."
+            $listUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels"
+            $listResponse = Invoke-RestMethod -Uri $listUrl -Method Get -Headers $headers
+            $existingModel = $listResponse.value | Where-Object { $_.displayName -eq $ReportName } | Select-Object -First 1
+            if ($existingModel) { 
+                $SemanticModelId = $existingModel.id 
+                $itemsReportPayload["boundDatasetId"] = $SemanticModelId
+                Write-Host "Resolved semantic model ID: $SemanticModelId"
+            } else {
+                throw "Dataset (SemanticModel) id is missing and could not be resolved."
+            }
+        }
+
+        # Call Items API
+        $createUrl   = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/items"
+        $rawResponse = Invoke-WebRequest -Uri $createUrl -Method Post -Body $deploymentPayloadJson -Headers $headers
+
+        $statusCode  = $rawResponse.StatusCode
+        $respHeaders = $rawResponse.Headers
+        $response    = $null
+        try { $response = $rawResponse.Content | ConvertFrom-Json } catch {}
 
         Write-Host "Raw Response Status: $statusCode"
+        Write-Host "Raw Response Body:" $rawResponse.Content
 
-        # Extract operationId
-        $operationId = $null
-        if ($respHeaders["x-ms-operation-id"]) {
-            $operationId = $respHeaders["x-ms-operation-id"]
-        } else {
-            try {
-                $parsed = $rawResponse.Content | ConvertFrom-Json
-                if ($parsed.operationId) { $operationId = $parsed.operationId }
-            } catch {}
-        }
-
-        if (-not $operationId) {
-            Write-Warning "No operationId found in response. Cannot poll deployment status."
-            return $false
-        }
-
-        Write-Host "Deployment started. Polling operation $operationId for up to 2 minutes..."
-        $pollUrl = "https://api.fabric.microsoft.com/v1/operations/$operationId"
-        $timeout = (Get-Date).AddMinutes(2)
-        $delay   = 5
-
-        do {
-            Start-Sleep -Seconds $delay
-            $opResponse = Invoke-RestMethod -Uri $pollUrl -Method Get -Headers $headers
-
-            Write-Host "Polling status = $($opResponse.status)"
-
-            if ($opResponse.status -eq "Succeeded") {
-                $reportId = $opResponse.result.resourceId
-                Write-Host "✓ Report deployed successfully"
-                Write-Host "Report ID: $reportId"
+        if ($statusCode -eq 201 -or $statusCode -eq 200) {
+            # Immediate success
+            Write-Host "✓ Report deployed successfully"
+            if ($response.id) {
+                Write-Host "Report ID: $($response.id)"
                 return $true
-            }
-            elseif ($opResponse.status -eq "Failed") {
-                Write-Error "Report deployment failed: $($opResponse.error.code) - $($opResponse.error.message)"
+            } else {
+                Write-Warning "Response did not contain a report ID."
                 return $false
             }
-        } while ((Get-Date) -lt $timeout)
+        } elseif ($statusCode -eq 202) {
+            # Async operation, poll for completion
+            $operationId = $null
+            if ($respHeaders["x-ms-operation-id"]) {
+                $operationId = $respHeaders["x-ms-operation-id"]
+            } elseif ($response.operationId) {
+                $operationId = $response.operationId
+            }
 
-        Write-Error "Report deployment polling timed out after 2 minutes"
-        return $false
-    }
-    catch {
+            if (-not $operationId) {
+                throw "Deployment accepted (202) but no operationId was returned."
+            }
+
+            Write-Host "Async deployment started. OperationId: $operationId"
+            $operationUrl = "https://api.fabric.microsoft.com/v1/operations/$operationId"
+
+            $maxAttempts = 24   # 2 minutes (24 * 5s)
+            for ($i=1; $i -le $maxAttempts; $i++) {
+                Start-Sleep -Seconds 5
+                $opStatus = Invoke-RestMethod -Uri $operationUrl -Method Get -Headers $headers
+                if ($opStatus.status -eq "Succeeded") {
+                    Write-Host "✓ Report deployment completed successfully"
+                    if ($opStatus.resourceId) {
+                        Write-Host "Report ID: $($opStatus.resourceId)"
+                        return $true
+                    }
+                    return $true
+                } elseif ($opStatus.status -eq "Failed") {
+                    throw "Async deployment failed: $($opStatus | ConvertTo-Json -Depth 20)"
+                }
+                Write-Host "Polling attempt $i: Status = $($opStatus.status)"
+            }
+
+            throw "Deployment did not complete within 2 minutes (timed out)."
+        } else {
+            throw "Unexpected status code: $statusCode"
+        }
+    } catch {
         Write-Error "Failed to deploy report: $_"
         return $false
     }
