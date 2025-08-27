@@ -60,11 +60,8 @@ stages:
         pool:
           vmImage: 'windows-latest'
         steps:
-          # Step 3: Install Python dependency (Semantic Link SDK)
-          - script: pip install semantic-link
-            displayName: "Install Semantic Link SDK"
 
-          # Step 4: Create Output Directory
+          # Step 3: Create Output Directory
           - task: PowerShell@2
             displayName: 'Create Output Directory'
             inputs:
@@ -76,7 +73,7 @@ stages:
                 }
                 Write-Host "Output directory created: $outputPath"
 
-          # Step 5: Run Main PBIP Deployment Script
+          # Step 4: Run Main PBIP Deployment Script
           - task: PowerShell@2
             displayName: "Deploy PBIP Reports to Power BI"
             inputs:
@@ -85,7 +82,7 @@ stages:
               pwsh: true
               workingDirectory: '$(Build.SourcesDirectory)'
 
-          # Step 6: Publish deployment logs as artifacts (if they exist)
+          # Step 5: Publish deployment logs as artifacts (if they exist)
           - task: PublishBuildArtifacts@1
             displayName: 'Publish Deployment Logs'
             condition: always()
