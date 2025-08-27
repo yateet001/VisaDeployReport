@@ -585,7 +585,7 @@ function Deploy-Report {
         }
 
         if ($SemanticModelId) {
-            $itemsReportPayload["datasetId"] = $SemanticModelId
+            $itemsReportPayload["semanticModelId"] = $SemanticModelId
             Write-Host "🔗 Binding report to semantic model ID: $SemanticModelId"
         }
 
@@ -642,9 +642,15 @@ function Deploy-Report {
                             format = "PBIR"
                             parts  = $parts
                         }
-                    } | ConvertTo-Json -Depth 50
+                    }
 
-                    Invoke-RestMethod -Uri $updateUrl -Method Post -Body $updatePayload -Headers $headers -ErrorAction Stop
+                    if ($SemanticModelId) {
+                        $updatePayload["semanticModelId"] = $SemanticModelId
+                    }
+
+                    $updatePayloadJson = $updatePayload | ConvertTo-Json -Depth 50
+
+                    Invoke-RestMethod -Uri $updateUrl -Method Post -Body $updatePayloadJson -Headers $headers -ErrorAction Stop
                     Write-Host "✅ Report updated successfully"
                     return $existingReport.id
                 }
