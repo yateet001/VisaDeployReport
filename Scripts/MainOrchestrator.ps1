@@ -615,7 +615,9 @@ function Deploy-Report {
                 for ($i=1; $i -le $maxAttempts; $i++) {
                     Start-Sleep -Seconds 10
                     $opStatus = Invoke-RestMethod -Uri $opLocation -Headers $headers -Method Get
-                    Write-Host "Polling attempt $i: Status = $($opStatus.status)"
+                    $statusValue = $opStatus.status
+                    Write-Host "Polling attempt $i: Status = $statusValue"
+
                     if ($opStatus.status -eq "Succeeded") {
                         Write-Host "✓ Report deployed successfully"
                         return $true
