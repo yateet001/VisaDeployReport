@@ -537,8 +537,6 @@ function Deploy-SemanticModel {
 
 }
 
-
-
 function Deploy-Report {
     param(
         [Parameter(Mandatory=$true)]
@@ -553,6 +551,7 @@ function Deploy-Report {
     )
 
     try {
+        Write-Host "--- STEP 6: REPORT DEPLOYMENT ---"
         Write-Host "📦 Deploying PBIP report: $ReportName"
 
         $reportJsonFile = Join-Path $ReportFolder "report.json"
@@ -560,7 +559,7 @@ function Deploy-Report {
             throw "❌ report.json file not found in report folder"
         }
 
-        # Collect all files from PBIP folder (report.json + static resources etc.)
+        # Collect all files (report.json + StaticResources etc.)
         $allFiles = Get-ChildItem -Path $ReportFolder -Recurse -File
         $parts = @()
         foreach ($file in $allFiles) {
@@ -569,9 +568,9 @@ function Deploy-Report {
             $bytes = [System.IO.File]::ReadAllBytes($file.FullName)
             $b64 = [Convert]::ToBase64String($bytes)
             $parts += @{
-                path = $relativePath
-                payload = $b64
-                payloadType = 'InlineBase64'
+                path       = $relativePath
+                payload    = $b64
+                payloadType= 'InlineBase64'
             }
         }
 
@@ -599,15 +598,26 @@ function Deploy-Report {
 
         $createUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/items"
 
-        # Try creating the report
         try {
             $response = Invoke-RestMethod -Uri $createUrl -Method Post -Body $deploymentPayloadJson -Headers $headers
             Write-Host "✅ Report deployed successfully"
-            Write-Host "Report ID: $($response.id)"
-            return $response.id
+
+            # 🔑 Extract Report ID safely
+            $reportId = $null
+            if ($response.id) {
+                $reportId = $response.id
+            } elseif ($response.value -and $response.value[0].id) {
+                $reportId = $response.value[0].id
+            }
+
+            if (-not $reportId) {
+                throw "❌ Report created but ID not found in response. Full Response: $(ConvertTo-Json $response -Depth 50)"
+            }
+
+            Write-Host "Report ID: $reportId"
+            return $reportId
         }
         catch {
-            # Handle conflict (already exists)
             $statusCode = $_.Exception.Response.StatusCode.Value__
             if ($statusCode -eq 409) {
                 Write-Host "⚠️ Report already exists, updating definition..."
