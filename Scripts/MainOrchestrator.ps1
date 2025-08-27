@@ -610,11 +610,18 @@ function Deploy-Report {
             } | ConvertTo-Json -Depth 50
 
             try {
-                Invoke-RestMethod -Uri $updateUrl -Method Post -Body $updatePayload -Headers $headers
+                $updateResponse = Invoke-RestMethod -Uri $updateUrl -Method Post -Body $updatePayload -Headers $headers
                 Write-Host "✓ Report updated successfully"
+                Write-Host "Update response: $($updateResponse | ConvertTo-Json -Depth 3)"
                 return $true
             } catch {
                 Write-Warning "Report update failed: $($_.Exception.Message)"
+                if ($_.Exception.Response) {
+                    $errorStream = $_.Exception.Response.GetResponseStream()
+                    $reader = New-Object System.IO.StreamReader($errorStream)
+                    $errorBody = $reader.ReadToEnd()
+                    Write-Warning "Error details: $errorBody"
+                }
                 return $false
             }
         } else {
@@ -635,25 +642,8 @@ function Deploy-Report {
                 }
             }
 
-            # Use Power BI REST API for report creation (more reliable)
-            $createUrl = "https://api.powerbi.com/v1.0/myorg/groups/$WorkspaceId/imports"
-            
-            # Create multipart form data
-            $boundary = [System.Guid]::NewGuid().ToString()
-            $bodyTemplate = @"
---{0}
-Content-Disposition: form-data; name="datasetDisplayName"
-
-{1}
---{0}
-Content-Disposition: form-data; name="nameConflict"
-
-CreateOrOverwrite
---{0}--
-"@
-            
+            # Try Fabric Items API first
             try {
-                # Alternative: Try using Items API with correct structure
                 $itemPayload = @{
                     displayName = $ReportName
                     type = "Report"
@@ -663,26 +653,127 @@ CreateOrOverwrite
                     }
                 }
                 
+                Write-Host "Attempting creation via Fabric Items API..."
                 $createItemUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/items"
                 $response = Invoke-RestMethod -Uri $createItemUrl -Method Post -Body ($itemPayload | ConvertTo-Json -Depth 50) -Headers $headers
                 
+                # Debug: Output the full response
+                Write-Host "API Response: $($response | ConvertTo-Json -Depth 5)"
+                
+                # Check for various possible ID fields in the response
+                $reportId = $null
                 if ($response.id) {
-                    Write-Host "✓ Report created successfully (ID: $($response.id))"
+                    $reportId = $response.id
+                } elseif ($response.objectId) {
+                    $reportId = $response.objectId
+                } elseif ($response.reportId) {
+                    $reportId = $response.reportId
+                } elseif ($response.value -and $response.value[0] -and $response.value[0].id) {
+                    $reportId = $response.value[0].id
+                }
+                
+                if ($reportId) {
+                    Write-Host "✓ Report created successfully via Fabric Items API (ID: $reportId)"
                     return $true
                 } else {
-                    Write-Warning "Report creation returned no ID"
-                    return $false
+                    Write-Warning "Fabric Items API succeeded but returned unexpected response structure"
+                    # Fall back to Power BI REST API
+                    throw "No ID in Fabric API response, trying Power BI API"
                 }
             } catch {
-                Write-Error "Report creation failed: $($_.Exception.Message)"
-                return $false
+                Write-Warning "Fabric Items API failed: $($_.Exception.Message)"
+                Write-Host "Falling back to Power BI REST API..."
+                
+                # Fallback: Try Power BI REST API
+                try {
+                    # First, we need to create a .pbix file from the PBIR format
+                    # This is a simplified approach - you might need to adjust based on your PBIR structure
+                    
+                    # Alternative approach: Use Power BI import API with multipart form data
+                    $createUrl = "https://api.powerbi.com/v1.0/myorg/groups/$WorkspaceId/imports"
+                    $boundary = [System.Guid]::NewGuid().ToString()
+                    
+                    # For Power BI API, we need to handle this differently
+                    # Let's try the simpler approach with just the main report file
+                    $reportJsonContent = Get-Content -Path $reportJsonFile -Raw
+                    
+                    # Create a simple payload for Power BI API
+                    $powerBIHeaders = @{ 
+                        "Authorization" = "Bearer $AccessToken"
+                    }
+                    
+                    # Try using the reportDefinition endpoint
+                    $reportDefUrl = "https://api.powerbi.com/v1.0/myorg/groups/$WorkspaceId/reports"
+                    $reportPayload = @{
+                        name = $ReportName
+                        # You might need to adjust this based on your specific requirements
+                    } | ConvertTo-Json
+                    
+                    Write-Host "Attempting creation via Power BI REST API..."
+                    $powerBIResponse = Invoke-RestMethod -Uri $reportDefUrl -Method Post -Body $reportPayload -Headers $powerBIHeaders -ContentType "application/json"
+                    
+                    Write-Host "Power BI API Response: $($powerBIResponse | ConvertTo-Json -Depth 5)"
+                    
+                    if ($powerBIResponse.id) {
+                        Write-Host "✓ Report created successfully via Power BI REST API (ID: $($powerBIResponse.id))"
+                        return $true
+                    } else {
+                        Write-Warning "Power BI REST API also returned no ID"
+                        return $false
+                    }
+                    
+                } catch {
+                    Write-Error "Power BI REST API also failed: $($_.Exception.Message)"
+                    if ($_.Exception.Response) {
+                        $errorStream = $_.Exception.Response.GetResponseStream()
+                        $reader = New-Object System.IO.StreamReader($errorStream)
+                        $errorBody = $reader.ReadToEnd()
+                        Write-Error "Power BI API Error details: $errorBody"
+                    }
+                    return $false
+                }
             }
         }
         
     } catch {
         Write-Error "Failed to deploy report: $_"
+        if ($_.Exception.Response) {
+            $errorStream = $_.Exception.Response.GetResponseStream()
+            $reader = New-Object System.IO.StreamReader($errorStream)
+            $errorBody = $reader.ReadToEnd()
+            Write-Error "Detailed error: $errorBody"
+        }
         return $false
     }
+}
+
+# Helper function to wait for long-running operations
+function Wait-ForOperation {
+    param(
+        [string]$OperationUrl,
+        [hashtable]$Headers,
+        [int]$MaxWaitTimeMinutes = 5
+    )
+    
+    $maxWaitTime = (Get-Date).AddMinutes($MaxWaitTimeMinutes)
+    
+    do {
+        Start-Sleep -Seconds 10
+        try {
+            $operationResponse = Invoke-RestMethod -Uri $OperationUrl -Method Get -Headers $Headers
+            Write-Host "Operation status: $($operationResponse.status)"
+            
+            if ($operationResponse.status -eq "Succeeded") {
+                return $operationResponse
+            } elseif ($operationResponse.status -eq "Failed") {
+                throw "Operation failed: $($operationResponse.error)"
+            }
+        } catch {
+            Write-Warning "Error checking operation status: $($_.Exception.Message)"
+        }
+    } while ((Get-Date) -lt $maxWaitTime)
+    
+    throw "Operation timed out after $MaxWaitTimeMinutes minutes"
 }
 
 function Deploy-PBIPUsingFabricAPI {
