@@ -602,8 +602,8 @@ function Deploy-Report {
             throw "Unexpected response status: $($rawResponse.StatusCode)"
         }
 
-        # Poll for operation status (max 2 min, 5 sec interval)
-        $operationUrl = $rawResponse.Headers["Location"]
+       # Poll for operation status (max 2 min, 5 sec interval)
+        $operationUrl = [string]($rawResponse.Headers["Location"] | Select-Object -First 1)
         if (-not $operationUrl) {
             throw "Deployment returned 202 but no Location header found for polling."
         }
@@ -614,7 +614,7 @@ function Deploy-Report {
             Start-Sleep -Seconds 5
             $opResponse = Invoke-RestMethod -Uri $operationUrl -Method Get -Headers $headers
             $opStatus = $opResponse.status
-            Write-Host ("Polling attempt {0}: Status = {1}" -f $i, $opStatus)   # ✅ Safe string formatting
+            Write-Host ("Polling attempt {0}: Status = {1}" -f $i, $opStatus)
 
             if ($opStatus -eq "Succeeded") {
                 Write-Host "✓ Report deployed successfully"
