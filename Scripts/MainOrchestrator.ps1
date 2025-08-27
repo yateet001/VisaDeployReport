@@ -502,38 +502,38 @@ function Deploy-SemanticModel {
         Write-Error "Failed to deploy semantic model: $($_)"
         return @{ Success = $false; deployedModelId = $null; Error = "$($_)" }
     }
-    # 🔄 Step 2: Trigger refresh (Fabric API)
-        $refreshUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels/$deployedModelId/refreshes"
-        Write-Host "Triggering refresh for semantic model (ID: $deployedModelId)..."
-        Write-Host "Refresh URL: $refreshUrl"
-        $refreshPayload = "{}" | ConvertTo-Json
-        $refreshHeaders = @{
-             "Authorization" = "Bearer $AccessToken"
-            #  "Content-Type" = "application/json"
-        }
-        Invoke-RestMethod -Uri $refreshUrl -Method Post -Headers $refreshHeaders -Body $refreshPayload
-        Invoke-RestMethod -Uri $refreshUrl -Method Post -Headers $headers
-        Write-Host "✓ Refresh triggered (Fabric PBIP model)"
+    # # 🔄 Step 2: Trigger refresh (Fabric API)
+    #     $refreshUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels/$deployedModelId/refreshes"
+    #     Write-Host "Triggering refresh for semantic model (ID: $deployedModelId)..."
+    #     Write-Host "Refresh URL: $refreshUrl"
+    #     $refreshPayload = "{}" | ConvertTo-Json
+    #     $refreshHeaders = @{
+    #          "Authorization" = "Bearer $AccessToken"
+    #         #  "Content-Type" = "application/json"
+    #     }
+    #     Invoke-RestMethod -Uri $refreshUrl -Method Post -Headers $refreshHeaders -Body $refreshPayload
+    #     Invoke-RestMethod -Uri $refreshUrl -Method Post -Headers $headers
+    #     Write-Host "✓ Refresh triggered (Fabric PBIP model)"
         
-         try {
-            Invoke-RestMethod `
-                -Uri $refreshUrl `
-                -Method Post `
-                -Headers @{ "Authorization" = "Bearer $AccessToken" }  # ⚡ No Content-Type, No Body
-            Write-Host "✓ Refresh triggered successfully"
-        }
-        catch {
-            Write-Host "❌ Refresh failed: $($_.Exception.Message)"
-        }
+    #      try {
+    #         Invoke-RestMethod `
+    #             -Uri $refreshUrl `
+    #             -Method Post `
+    #             -Headers @{ "Authorization" = "Bearer $AccessToken" }  # ⚡ No Content-Type, No Body
+    #         Write-Host "✓ Refresh triggered successfully"
+    #     }
+    #     catch {
+    #         Write-Host "❌ Refresh failed: $($_.Exception.Message)"
+    #     }
 
-        # ✅ Return JSON with id + name
-        $output = @{
-            Success       = $true
-            ModelId       = $deployedModelId
-            Name          = $deployedModelName
-            RefreshStatus = "Triggered"
-        }| ConvertTo-Json -Depth 5
-        Write-Output $output
+    #     # ✅ Return JSON with id + name
+    #     $output = @{
+    #         Success       = $true
+    #         ModelId       = $deployedModelId
+    #         Name          = $deployedModelName
+    #         RefreshStatus = "Triggered"
+    #     }| ConvertTo-Json -Depth 5
+    #     Write-Output $output
 
 }
 
