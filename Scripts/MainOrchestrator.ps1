@@ -537,8 +537,6 @@ function Deploy-SemanticModel {
 
 }
 
-
-
 function Deploy-Report {
     param(
         [Parameter(Mandatory=$true)]
@@ -644,6 +642,20 @@ function Deploy-Report {
 
             # Try Fabric Items API first
             try {
+                Write-Host "Attempting creation via Fabric Items API..."
+                $createItemUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/items"
+                
+                # Test the endpoint first
+                Write-Host "Testing workspace access..."
+                $testUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId"
+                try {
+                    $workspaceInfo = Invoke-RestMethod -Uri $testUrl -Method Get -Headers $headers
+                    Write-Host "Workspace found: $($workspaceInfo.displayName)"
+                } catch {
+                    Write-Error "Cannot access workspace $WorkspaceId - Error: $($_.Exception.Message)"
+                    return $false
+                }
+                
                 $itemPayload = @{
                     displayName = $ReportName
                     type = "Report"
@@ -653,83 +665,128 @@ function Deploy-Report {
                     }
                 }
                 
-                Write-Host "Attempting creation via Fabric Items API..."
-                $createItemUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/items"
-                $response = Invoke-RestMethod -Uri $createItemUrl -Method Post -Body ($itemPayload | ConvertTo-Json -Depth 50) -Headers $headers
-                
-                # Debug: Output the full response
-                Write-Host "API Response: $($response | ConvertTo-Json -Depth 5)"
-                
-                # Check for various possible ID fields in the response
-                $reportId = $null
-                if ($response.id) {
-                    $reportId = $response.id
-                } elseif ($response.objectId) {
-                    $reportId = $response.objectId
-                } elseif ($response.reportId) {
-                    $reportId = $response.reportId
-                } elseif ($response.value -and $response.value[0] -and $response.value[0].id) {
-                    $reportId = $response.value[0].id
+                # Make the API call with enhanced error handling
+                try {
+                    $response = Invoke-WebRequest -Uri $createItemUrl -Method Post -Body ($itemPayload | ConvertTo-Json -Depth 50) -Headers $headers -UseBasicParsing
+                    
+                    Write-Host "HTTP Status: $($response.StatusCode)"
+                    Write-Host "Response Headers: $($response.Headers | ConvertTo-Json)"
+                    Write-Host "Raw Response Content: $($response.Content)"
+                    
+                    # Handle async operations - check for Location header
+                    if ($response.Headers["Location"]) {
+                        $operationUrl = $response.Headers["Location"]
+                        Write-Host "Operation started, polling status at: $operationUrl"
+                        
+                        # Wait for the operation to complete
+                        $operationResult = Wait-ForOperation -OperationUrl $operationUrl -Headers $headers -MaxWaitTimeMinutes 10
+                        
+                        if ($operationResult -and $operationResult.result -and $operationResult.result.id) {
+                            Write-Host "✓ Report created successfully via async operation (ID: $($operationResult.result.id))"
+                            return $true
+                        }
+                    }
+                    
+                    # Try to parse JSON response
+                    if ($response.Content) {
+                        $jsonResponse = $response.Content | ConvertFrom-Json
+                        Write-Host "Parsed JSON Response: $($jsonResponse | ConvertTo-Json -Depth 5)"
+                        
+                        # Check for various possible ID fields
+                        $reportId = $null
+                        if ($jsonResponse.id) {
+                            $reportId = $jsonResponse.id
+                        } elseif ($jsonResponse.objectId) {
+                            $reportId = $jsonResponse.objectId
+                        } elseif ($jsonResponse.reportId) {
+                            $reportId = $jsonResponse.reportId
+                        }
+                        
+                        if ($reportId) {
+                            Write-Host "✓ Report created successfully via Fabric Items API (ID: $reportId)"
+                            return $true
+                        }
+                    }
+                    
+                    # If we get here, the API call succeeded but we can't find an ID
+                    Write-Warning "Fabric Items API succeeded but no ID found in response"
+                    
+                } catch {
+                    Write-Error "Fabric Items API request failed: $($_.Exception.Message)"
+                    if ($_.Exception.Response) {
+                        $errorResponse = $_.Exception.Response
+                        Write-Error "Status Code: $($errorResponse.StatusCode)"
+                        Write-Error "Status Description: $($errorResponse.StatusDescription)"
+                        
+                        try {
+                            $errorStream = $errorResponse.GetResponseStream()
+                            $reader = New-Object System.IO.StreamReader($errorStream)
+                            $errorBody = $reader.ReadToEnd()
+                            Write-Error "Error Body: $errorBody"
+                        } catch {
+                            Write-Error "Could not read error response body"
+                        }
+                    }
+                    throw
                 }
                 
-                if ($reportId) {
-                    Write-Host "✓ Report created successfully via Fabric Items API (ID: $reportId)"
-                    return $true
-                } else {
-                    Write-Warning "Fabric Items API succeeded but returned unexpected response structure"
-                    # Fall back to Power BI REST API
-                    throw "No ID in Fabric API response, trying Power BI API"
-                }
             } catch {
                 Write-Warning "Fabric Items API failed: $($_.Exception.Message)"
-                Write-Host "Falling back to Power BI REST API..."
+                Write-Host "Trying alternative approach with createReport endpoint..."
                 
-                # Fallback: Try Power BI REST API
+                # Try the createReport endpoint directly
                 try {
-                    # First, we need to create a .pbix file from the PBIR format
-                    # This is a simplified approach - you might need to adjust based on your PBIR structure
+                    $createReportUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/reports"
                     
-                    # Alternative approach: Use Power BI import API with multipart form data
-                    $createUrl = "https://api.powerbi.com/v1.0/myorg/groups/$WorkspaceId/imports"
-                    $boundary = [System.Guid]::NewGuid().ToString()
+                    # Simplified payload for report creation
+                    $reportPayload = @{
+                        displayName = $ReportName
+                        definition = @{
+                            format = "PBIR"
+                            parts = $parts
+                        }
+                    }
                     
-                    # For Power BI API, we need to handle this differently
-                    # Let's try the simpler approach with just the main report file
-                    $reportJsonContent = Get-Content -Path $reportJsonFile -Raw
+                    Write-Host "Attempting direct report creation..."
+                    $reportResponse = Invoke-RestMethod -Uri $createReportUrl -Method Post -Body ($reportPayload | ConvertTo-Json -Depth 50) -Headers $headers
                     
-                    # Create a simple payload for Power BI API
+                    Write-Host "Direct report API Response: $($reportResponse | ConvertTo-Json -Depth 5)"
+                    
+                    if ($reportResponse.id) {
+                        Write-Host "✓ Report created successfully via direct report API (ID: $($reportResponse.id))"
+                        return $true
+                    }
+                    
+                } catch {
+                    Write-Warning "Direct report API also failed: $($_.Exception.Message)"
+                }
+                
+                # Final fallback: Try Power BI Import API with proper multipart form
+                Write-Host "Falling back to Power BI Import API..."
+                try {
+                    # First, check if we can access the workspace via Power BI API
                     $powerBIHeaders = @{ 
                         "Authorization" = "Bearer $AccessToken"
                     }
                     
-                    # Try using the reportDefinition endpoint
-                    $reportDefUrl = "https://api.powerbi.com/v1.0/myorg/groups/$WorkspaceId/reports"
-                    $reportPayload = @{
-                        name = $ReportName
-                        # You might need to adjust this based on your specific requirements
-                    } | ConvertTo-Json
-                    
-                    Write-Host "Attempting creation via Power BI REST API..."
-                    $powerBIResponse = Invoke-RestMethod -Uri $reportDefUrl -Method Post -Body $reportPayload -Headers $powerBIHeaders -ContentType "application/json"
-                    
-                    Write-Host "Power BI API Response: $($powerBIResponse | ConvertTo-Json -Depth 5)"
-                    
-                    if ($powerBIResponse.id) {
-                        Write-Host "✓ Report created successfully via Power BI REST API (ID: $($powerBIResponse.id))"
-                        return $true
-                    } else {
-                        Write-Warning "Power BI REST API also returned no ID"
+                    $workspaceCheckUrl = "https://api.powerbi.com/v1.0/myorg/groups/$WorkspaceId"
+                    try {
+                        $workspaceCheck = Invoke-RestMethod -Uri $workspaceCheckUrl -Method Get -Headers $powerBIHeaders
+                        Write-Host "Power BI workspace accessible: $($workspaceCheck.name)"
+                    } catch {
+                        Write-Error "Cannot access workspace via Power BI API: $($_.Exception.Message)"
                         return $false
                     }
                     
+                    # For PBIR files, we need to use the import endpoint differently
+                    # This is a complex process that might require converting PBIR to PBIX first
+                    Write-Warning "PBIR to Power BI conversion not yet implemented in this script"
+                    Write-Host "Consider using Power BI Desktop to publish the report, or implement PBIR to PBIX conversion"
+                    
+                    return $false
+                    
                 } catch {
-                    Write-Error "Power BI REST API also failed: $($_.Exception.Message)"
-                    if ($_.Exception.Response) {
-                        $errorStream = $_.Exception.Response.GetResponseStream()
-                        $reader = New-Object System.IO.StreamReader($errorStream)
-                        $errorBody = $reader.ReadToEnd()
-                        Write-Error "Power BI API Error details: $errorBody"
-                    }
+                    Write-Error "Power BI fallback also failed: $($_.Exception.Message)"
                     return $false
                 }
             }
@@ -752,28 +809,72 @@ function Wait-ForOperation {
     param(
         [string]$OperationUrl,
         [hashtable]$Headers,
-        [int]$MaxWaitTimeMinutes = 5
+        [int]$MaxWaitTimeMinutes = 10
     )
     
+    Write-Host "Waiting for long-running operation to complete..."
     $maxWaitTime = (Get-Date).AddMinutes($MaxWaitTimeMinutes)
+    $attempt = 1
     
     do {
-        Start-Sleep -Seconds 10
+        Write-Host "Checking operation status (attempt $attempt)..."
+        Start-Sleep -Seconds 15
+        
         try {
             $operationResponse = Invoke-RestMethod -Uri $OperationUrl -Method Get -Headers $Headers
-            Write-Host "Operation status: $($operationResponse.status)"
+            Write-Host "Operation response: $($operationResponse | ConvertTo-Json -Depth 3)"
             
-            if ($operationResponse.status -eq "Succeeded") {
-                return $operationResponse
-            } elseif ($operationResponse.status -eq "Failed") {
-                throw "Operation failed: $($operationResponse.error)"
+            if ($operationResponse.status) {
+                Write-Host "Operation status: $($operationResponse.status)"
+                
+                if ($operationResponse.status -eq "Succeeded" -or $operationResponse.status -eq "Completed") {
+                    Write-Host "✓ Operation completed successfully"
+                    return $operationResponse
+                } elseif ($operationResponse.status -eq "Failed" -or $operationResponse.status -eq "Error") {
+                    $errorMsg = if ($operationResponse.error) { $operationResponse.error } else { "Unknown error" }
+                    throw "Operation failed: $errorMsg"
+                } elseif ($operationResponse.status -eq "Running" -or $operationResponse.status -eq "InProgress") {
+                    Write-Host "Operation still running..."
+                } else {
+                    Write-Host "Unknown status: $($operationResponse.status)"
+                }
+            } else {
+                # Some APIs don't return a status field, check for completion differently
+                if ($operationResponse.result -or $operationResponse.id) {
+                    Write-Host "✓ Operation appears to be completed (no status field but has result/id)"
+                    return $operationResponse
+                }
             }
         } catch {
             Write-Warning "Error checking operation status: $($_.Exception.Message)"
+            # Continue trying unless it's a 404 (operation not found)
+            if ($_.Exception.Response -and $_.Exception.Response.StatusCode -eq 404) {
+                throw "Operation not found (404) - may have completed or expired"
+            }
         }
+        
+        $attempt++
     } while ((Get-Date) -lt $maxWaitTime)
     
     throw "Operation timed out after $MaxWaitTimeMinutes minutes"
+}
+
+# Additional helper function to verify workspace access
+function Test-WorkspaceAccess {
+    param(
+        [string]$WorkspaceId,
+        [hashtable]$Headers
+    )
+    
+    try {
+        $workspaceUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId"
+        $workspace = Invoke-RestMethod -Uri $workspaceUrl -Method Get -Headers $Headers
+        Write-Host "✓ Workspace access verified: $($workspace.displayName)"
+        return $true
+    } catch {
+        Write-Error "✗ Cannot access workspace $WorkspaceId`: $($_.Exception.Message)"
+        return $false
+    }
 }
 
 function Deploy-PBIPUsingFabricAPI {
