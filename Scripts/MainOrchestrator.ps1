@@ -416,7 +416,7 @@ function Deploy-SemanticModel {
     $deployedModelName = $null
 
     try {
-        Write-Host "Deploying semantic model: $ModelName"
+        Write-Host "🚀 Deploying semantic model: $ModelName"
 
         $modelBimFile = Get-ChildItem -Path $SemanticModelFolder -Filter "model.bim" -Recurse | Select-Object -First 1
         if (-not $modelBimFile) { throw "model.bim file not found in semantic model folder" }
@@ -424,7 +424,7 @@ function Deploy-SemanticModel {
         $modelDefinitionRaw = Get-Content $modelBimFile.FullName -Raw
         $modelJson = $modelDefinitionRaw | ConvertFrom-Json
 
-        # Connection switching
+        # 🔄 Connection switching
         $pattern = 'Sql\.Database\(".*?"\s*,\s*".*?"(?:\s*,\s*\[.*?\])?\)'
         $replacement = 'Sql.Database("' + $ServerName + '", "' + $DatabaseName + '")'
         $updatesApplied = 0
@@ -480,7 +480,6 @@ function Deploy-SemanticModel {
             Write-Host "✓ Semantic model updated successfully"
             $deployedModelId = $existingModel.id
             $deployedModelName = $existingModel.displayName
-            # return @{ Success = $true; ModelId = $existingModel.id }
         }
         else {
             Write-Host "No existing model found → creating new semantic model..."
@@ -495,49 +494,35 @@ function Deploy-SemanticModel {
             Write-Host "✓ Semantic model created successfully (ID: $($createResp.id))"
             $deployedModelId =  $createResp.id 
             $deployedModelName = $createResp.displayName 
-            # return @{ Success = $true; ModelId = $createResp.id }
         }
 
     } catch {
         Write-Error "Failed to deploy semantic model: $($_)"
         return @{ Success = $false; deployedModelId = $null; Error = "$($_)" }
     }
-    # 🔄 Step 2: Trigger refresh (Fabric API)
-        $refreshUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels/$deployedModelId/refreshes"
-        Write-Host "Triggering refresh for semantic model (ID: $deployedModelId)..."
-        Write-Host "Refresh URL: $refreshUrl"
-        $refreshPayload = "{}" | ConvertTo-Json
-        $refreshHeaders = @{
-             "Authorization" = "Bearer $AccessToken"
-            #  "Content-Type" = "application/json"
-        }
-        Invoke-RestMethod -Uri $refreshUrl -Method Post -Headers $refreshHeaders -Body $refreshPayload
-        # Invoke-RestMethod -Uri $refreshUrl -Method Post -Headers $headers
-        Write-Host "✓ Refresh triggered (Fabric PBIP model)"
-        
-         try {
-            Invoke-RestMethod `
-                -Uri $refreshUrl `
-                -Method Post `
-                -Headers @{ "Authorization" = "Bearer $AccessToken" }  # ⚡ No Content-Type, No Body
-            Write-Host "✓ Refresh triggered successfully"
-        }
-        catch {
-            Write-Host "❌ Refresh failed: $($_.Exception.Message)"
-        }
 
-        # ✅ Return JSON with id + name
-        $output = @{
-            Success       = $true
-            ModelId       = $deployedModelId
-            Name          = $deployedModelName
-            RefreshStatus = "Triggered"
-        }| ConvertTo-Json -Depth 5
-        Write-Output $output
+    # 🔄 Step 2: Refresh using Python Semantic Link SDK
+    try {
+        Write-Host "📦 Calling Python SDK (semantic-link) to refresh semantic model..."
+        python "$(PSScriptRoot)\RefreshSemanticModel.py" `
+            --workspaceId $WorkspaceId `
+            --modelId $deployedModelId `
+            --accessToken $AccessToken
+        Write-Host "✅ Refresh completed via Semantic Link SDK"
+    }
+    catch {
+        Write-Error "❌ Python SDK refresh failed: $($_)"
+    }
 
+    # ✅ Return JSON with id + name
+    $output = @{
+        Success       = $true
+        ModelId       = $deployedModelId
+        Name          = $deployedModelName
+        RefreshStatus = "Triggered via SDK"
+    }| ConvertTo-Json -Depth 5
+    Write-Output $output
 }
-
-
 
 function Deploy-Report {
     param(
