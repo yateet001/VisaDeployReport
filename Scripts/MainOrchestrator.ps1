@@ -560,7 +560,7 @@ function Deploy-Report {
             throw "report.json file not found in report folder"
         }
 
-        # Build complete parts list from the report folder (include StaticResources and others)
+        # Collect all files as report parts
         $allFiles = Get-ChildItem -Path $ReportFolder -Recurse -File
         $parts = @()
         foreach ($file in $allFiles) {
@@ -569,52 +569,63 @@ function Deploy-Report {
             $bytes = [System.IO.File]::ReadAllBytes($file.FullName)
             $b64 = [Convert]::ToBase64String($bytes)
             $parts += @{
-                path = $relativePath
-                payload = $b64
+                path        = $relativePath
+                payload     = $b64
                 payloadType = 'InlineBase64'
             }
         }
 
+        # Build report payload
         $itemsReportPayload = @{
             displayName = $ReportName
-            type = 'Report'
-            definition = @{ format = 'PBIR'; parts = $parts }
+            type        = 'Report'
+            definition  = @{ format = 'PBIR'; parts = $parts }
         }
         
         # Add semantic model binding if provided
         if ($SemanticModelId) {
-             $itemsReportPayload["datasetId"] = $SemanticModelId
-             Write-Host "Binding report to semantic model ID: $SemanticModelId"
+            $itemsReportPayload["semanticModelId"] = $SemanticModelId
+            Write-Host "Binding report to semantic model ID: $SemanticModelId"
         }
 
-        $deploymentPayloadJson = $itemsReportPayload | ConvertTo-Json -Depth 50
-        
-        $deployUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/reports"
+        $deploymentPayloadJson = $itemsReportPayload | ConvertTo-Json -Depth 50 -Compress
         
         $headers = @{ 
             "Authorization" = "Bearer $AccessToken"
-            "Content-Type" = "application/json"
+            "Content-Type"  = "application/json"
         }
         
         try {
             if (-not $SemanticModelId) {
-                # Try to resolve dataset id by name
+                # Resolve semantic model id by report name
                 Write-Warning "SemanticModelId not provided; resolving by report/semantic model name..."
                 $listUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels"
                 $listResponse = Invoke-RestMethod -Uri $listUrl -Method Get -Headers $headers
                 $existingModel = $listResponse.value | Where-Object { $_.displayName -eq $ReportName } | Select-Object -First 1
-                if ($existingModel) { $SemanticModelId = $existingModel.id }
+                if ($existingModel) { 
+                    $SemanticModelId = $existingModel.id
+                    $itemsReportPayload["semanticModelId"] = $SemanticModelId
+                    Write-Host "Resolved semanticModelId: $SemanticModelId"
+                }
             }
             if (-not $SemanticModelId) {
-                throw "Dataset (SemanticModel) id is missing and could not be resolved."
+                throw "SemanticModel id is missing and could not be resolved."
             }
 
-            # Prefer Items API for PBIP report creation
+            # Create via Items API
             $createUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/items"
             $response = Invoke-RestMethod -Uri $createUrl -Method Post -Body $deploymentPayloadJson -Headers $headers
+            
             Write-Host "✓ Report deployed successfully"
-            Write-Host "Report ID: $($response.id)"
-            return $true
+            Write-Host "Full API response:" ($response | ConvertTo-Json -Depth 10)
+            if ($response.id) {
+                Write-Host "Report ID: $($response.id)"
+                return $response.id
+            } else {
+                Write-Warning "API response did not contain 'id'."
+                return $null
+            }
+
         } catch {
             $statusCode = $null
             $errBody = $null
@@ -627,7 +638,6 @@ function Deploy-Report {
             if ($statusCode -eq 409) {
                 Write-Host "Report already exists, attempting to find and update..."
                 
-                # Get existing reports to find the ID
                 try {
                     $listUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/reports"
                     $listResponse = Invoke-RestMethod -Uri $listUrl -Method Get -Headers $headers
@@ -636,66 +646,42 @@ function Deploy-Report {
                     if ($existingReport) {
                         Write-Host "Found existing report with ID: $($existingReport.id)"
                         
-                        # Try to update the existing report using updateDefinition endpoint
+                        # Update definition with all parts
                         $updateUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/reports/$($existingReport.id)/updateDefinition"
-                        
-                        $reportDefinition = Get-Content -Path $reportJsonFile -Raw
-                        $updatePayload = @{
-                        "definition" = @{
-                        "parts" = @(
-                            @{
-                                    "path"       = "report.json"
-                                    "payload"    = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($reportDefinition))
-                                    "payloadType" = "InlineBase64"
-                            }
-                            )
-                        }
-                    } | ConvertTo-Json -Depth 10
+                        $updatePayload = @{ 
+                            definition = @{ 
+                                format = 'PBIR'
+                                parts  = $parts 
+                            } 
+                        } | ConvertTo-Json -Depth 50 -Compress
 
                         
                         try {
                             $updateResponse = Invoke-RestMethod -Uri $updateUrl -Method Post -Body $updatePayload -Headers $headers
                             Write-Host "✓ Report updated successfully"
-                            return $true
+                            return $existingReport.id
                         } catch {
                             Write-Warning "Failed to update report definition: $_"
-                            # Even if update fails, consider it a success since report exists
                             Write-Host "✓ Report exists (update failed but continuing)"
-                            return $true
+                            return $existingReport.id
                         }
                     } else {
                         Write-Warning "Could not find existing report with name: $ReportName"
-                        return $false
+                        return $null
                     }
                 } catch {
                     Write-Warning "Failed to list existing reports: $_"
-                    return $false
+                    return $null
                 }
             } else {
                 Write-Error "Report creation failed. Status: $statusCode Body: $errBody"
-                # Fallback: Try Items API create explicitly if dedicated endpoint failed for non-409
-                try {
-                    $createUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/items"
-                    $payloadObj = $itemsReportPayload.PSObject.Copy()
-                    if ($SemanticModelId) {
-                        $payloadObj["datasetId"] = $SemanticModelId
-                        Write-Host "Binding report to semantic model ID: $SemanticModelId"
-                    }
-                    $payload = $payloadObj | ConvertTo-Json -Depth 50
-
-                    $response2 = Invoke-RestMethod -Uri $createUrl -Method Post -Body $payload -Headers $headers
-                    Write-Host "✓ Report deployed via Items API"
-                    return $true
-                } catch {
-                    Write-Error "Report creation failed. Status: $statusCode Body: $errBody"
-                    throw $_
-                }
+                return $null
             }
         }
         
     } catch {
         Write-Error "Failed to deploy report: $_"
-        return $false
+        return $null
     }
 }
 
