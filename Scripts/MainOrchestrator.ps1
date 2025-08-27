@@ -567,73 +567,116 @@ function Deploy-Report {
 
         # Resolve SemanticModelId if not provided
         if (-not $SemanticModelId) {
-            Write-Warning "SemanticModelId not provided; resolving by report/semantic model name..."
+            Write-Host "Resolving SemanticModelId by name..."
             $listUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels"
             $listResponse = Invoke-RestMethod -Uri $listUrl -Method Get -Headers $headers
             $existingModel = $listResponse.value | Where-Object { $_.displayName -eq $ReportName } | Select-Object -First 1
             if ($existingModel) { 
                 $SemanticModelId = $existingModel.id 
-                Write-Host "Resolved SemanticModelId: $SemanticModelId"
+                Write-Host "Found SemanticModelId: $SemanticModelId"
             }
         }
 
         if (-not $SemanticModelId) {
-            throw "Dataset (SemanticModel) id is missing and could not be resolved."
+            throw "Cannot deploy report without SemanticModelId"
         }
 
-        # Build parts
-        $allFiles = Get-ChildItem -Path $ReportFolder -Recurse -File
-        $parts = @()
-        foreach ($file in $allFiles) {
-            $relativePath = ($file.FullName.Substring($ReportFolder.Length) -replace '^[\\/]+','')
-            $relativePath = $relativePath -replace '\\','/'
-            $bytes = [System.IO.File]::ReadAllBytes($file.FullName)
-            $b64 = [Convert]::ToBase64String($bytes)
-            $parts += @{
-                path = $relativePath
-                payload = $b64
-                payloadType = 'InlineBase64'
-            }
-        }
-
-        $itemsReportPayload = @{
-            displayName = $ReportName
-            type = 'Report'
-            definition = @{ format = 'PBIR'; parts = $parts }
-            datasetId = $SemanticModelId
-        }
-        Write-Host "Binding report to semantic model ID: $SemanticModelId"
-
-        $deploymentPayloadJson = $itemsReportPayload | ConvertTo-Json -Depth 50
-        $createUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/items"
+        # Check if report already exists first
+        $listReportsUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/reports"
+        $existingReports = Invoke-RestMethod -Uri $listReportsUrl -Method Get -Headers $headers
+        $existingReport = $existingReports.value | Where-Object { $_.displayName -eq $ReportName }
         
-        try {
-            $response = Invoke-RestMethod -Uri $createUrl -Method Post -Body $deploymentPayloadJson -Headers $headers
-            Write-Host "✓ Report deployed successfully"
-            Write-Host "Report ID: $($response.id)"
-            return $true
-        } catch {
-            $statusCode = $_.Exception.Response.StatusCode
+        if ($existingReport) {
+            Write-Host "Report already exists (ID: $($existingReport.id)) - updating..."
             
-            if ($statusCode -eq 409) {
-                Write-Host "Report already exists, attempting to update..."
-                
-                $listUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/reports"
-                $listResponse = Invoke-RestMethod -Uri $listUrl -Method Get -Headers $headers
-                $existingReport = $listResponse.value | Where-Object { $_.displayName -eq $ReportName }
-                
-                if ($existingReport) {
-                    $updateUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/reports/$($existingReport.id)/updateDefinition"
-                    $updatePayload = @{
-                        definition = @{ parts = $parts }
-                    } | ConvertTo-Json -Depth 50
-
-                    Invoke-RestMethod -Uri $updateUrl -Method Post -Body $updatePayload -Headers $headers
-                    Write-Host "✓ Report updated successfully"
-                    return $true
+            # Build parts for update
+            $allFiles = Get-ChildItem -Path $ReportFolder -Recurse -File
+            $parts = @()
+            foreach ($file in $allFiles) {
+                $relativePath = ($file.FullName.Substring($ReportFolder.Length) -replace '^[\\/]+','')
+                $relativePath = $relativePath -replace '\\','/'
+                $bytes = [System.IO.File]::ReadAllBytes($file.FullName)
+                $b64 = [Convert]::ToBase64String($bytes)
+                $parts += @{
+                    path = $relativePath
+                    payload = $b64
+                    payloadType = 'InlineBase64'
                 }
             }
-            throw $_
+            
+            $updateUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/reports/$($existingReport.id)/updateDefinition"
+            $updatePayload = @{
+                definition = @{ parts = $parts }
+            } | ConvertTo-Json -Depth 50
+
+            try {
+                Invoke-RestMethod -Uri $updateUrl -Method Post -Body $updatePayload -Headers $headers
+                Write-Host "✓ Report updated successfully"
+                return $true
+            } catch {
+                Write-Warning "Report update failed: $($_.Exception.Message)"
+                return $false
+            }
+        } else {
+            Write-Host "Creating new report..."
+            
+            # Build parts for creation
+            $allFiles = Get-ChildItem -Path $ReportFolder -Recurse -File
+            $parts = @()
+            foreach ($file in $allFiles) {
+                $relativePath = ($file.FullName.Substring($ReportFolder.Length) -replace '^[\\/]+','')
+                $relativePath = $relativePath -replace '\\','/'
+                $bytes = [System.IO.File]::ReadAllBytes($file.FullName)
+                $b64 = [Convert]::ToBase64String($bytes)
+                $parts += @{
+                    path = $relativePath
+                    payload = $b64
+                    payloadType = 'InlineBase64'
+                }
+            }
+
+            # Use Power BI REST API for report creation (more reliable)
+            $createUrl = "https://api.powerbi.com/v1.0/myorg/groups/$WorkspaceId/imports"
+            
+            # Create multipart form data
+            $boundary = [System.Guid]::NewGuid().ToString()
+            $bodyTemplate = @"
+--{0}
+Content-Disposition: form-data; name="datasetDisplayName"
+
+{1}
+--{0}
+Content-Disposition: form-data; name="nameConflict"
+
+CreateOrOverwrite
+--{0}--
+"@
+            
+            try {
+                # Alternative: Try using Items API with correct structure
+                $itemPayload = @{
+                    displayName = $ReportName
+                    type = "Report"
+                    definition = @{
+                        format = "PBIR"
+                        parts = $parts
+                    }
+                }
+                
+                $createItemUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/items"
+                $response = Invoke-RestMethod -Uri $createItemUrl -Method Post -Body ($itemPayload | ConvertTo-Json -Depth 50) -Headers $headers
+                
+                if ($response.id) {
+                    Write-Host "✓ Report created successfully (ID: $($response.id))"
+                    return $true
+                } else {
+                    Write-Warning "Report creation returned no ID"
+                    return $false
+                }
+            } catch {
+                Write-Error "Report creation failed: $($_.Exception.Message)"
+                return $false
+            }
         }
         
     } catch {
