@@ -558,30 +558,14 @@ function Deploy-Report {
             throw "report.json file not found in report folder"
         }
 
-        # Build complete parts list from the report folder
-        $allFiles = Get-ChildItem -Path $ReportFolder -Recurse -File
+        # Collect report parts
+        $allFiles = Get-ChildItem -Path $ReportFolder -Recurse -File | Where-Object { $_.FullName -notmatch "\\.platform($|\\)" }
         $parts = @()
         foreach ($file in $allFiles) {
             $relativePath = ($file.FullName.Substring($ReportFolder.Length) -replace '^[\\/]+','')
             $relativePath = $relativePath -replace '\\','/'
-
-            # Special patch for definition.pbir
-            if ($relativePath -ieq "definition.pbir") {
-                $json = Get-Content -Raw -Path $file.FullName | ConvertFrom-Json
-                foreach ($binding in $json.datasetBindings) {
-                    if ($binding.byPath) {
-                        $binding.PSObject.Properties.Remove("byPath")
-                        $binding | Add-Member -NotePropertyName "byConnection" -NotePropertyValue @{ semanticModelId = $SemanticModelId }
-                    }
-                }
-                $patchedJson = $json | ConvertTo-Json -Depth 50 -Compress
-                $b64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($patchedJson))
-            }
-            else {
-                $bytes = [System.IO.File]::ReadAllBytes($file.FullName)
-                $b64 = [Convert]::ToBase64String($bytes)
-            }
-
+            $bytes = [System.IO.File]::ReadAllBytes($file.FullName)
+            $b64 = [Convert]::ToBase64String($bytes)
             $parts += @{
                 path = $relativePath
                 payload = $b64
@@ -589,42 +573,49 @@ function Deploy-Report {
             }
         }
 
-        # Build report payload
         $itemsReportPayload = @{
             displayName = $ReportName
             type        = 'Report'
             definition  = @{ format = 'PBIR'; parts = $parts }
         }
         
-        # Add semantic model binding if provided
+        # Add semantic model binding
         if ($SemanticModelId) {
             $itemsReportPayload["boundDatasetId"] = $SemanticModelId
             Write-Host "Binding report to semantic model ID: $SemanticModelId"
         }
 
         $deploymentPayloadJson = $itemsReportPayload | ConvertTo-Json -Depth 50
+
         $headers = @{ 
             "Authorization" = "Bearer $AccessToken"
             "Content-Type"  = "application/json"
         }
-
+        
         try {
             $createUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/items"
             $rawResponse = Invoke-WebRequest -Uri $createUrl -Method Post -Body $deploymentPayloadJson -Headers $headers
+
             Write-Host "Raw Response Status: $($rawResponse.StatusCode)"
             Write-Host "Raw Response Body: $($rawResponse.Content)"
 
             if ($rawResponse.StatusCode -eq 202) {
                 # Long running operation polling
                 $opLocation = $rawResponse.Headers["Operation-Location"]
-                Write-Host "Polling operation status from: $opLocation"
-                
-                $pollSuccess = $false
-                for ($i=1; $i -le 24; $i++) {  # 24 * 5 sec = 120 sec (2 min)
-                    Start-Sleep -Seconds 5
-                    $opStatus = Invoke-RestMethod -Uri $opLocation -Headers $headers -Method Get
-                    Write-Host ("Polling attempt {0}: Status = {1}" -f $i, $opStatus.status)
+                if (-not $opLocation) {
+                    $opLocation = $rawResponse.Headers["Location"]
+                }
+                if (-not $opLocation) {
+                    throw "Report creation returned 202 but no operation status URL (Operation-Location/Location header missing)."
+                }
 
+                Write-Host "Polling operation status from: $opLocation"
+
+                $maxAttempts = 12  # 2 minutes total (12 x 10s)
+                for ($i=1; $i -le $maxAttempts; $i++) {
+                    Start-Sleep -Seconds 10
+                    $opStatus = Invoke-RestMethod -Uri $opLocation -Headers $headers -Method Get
+                    Write-Host "Polling attempt $i: Status = $($opStatus.status)"
                     if ($opStatus.status -eq "Succeeded") {
                         Write-Host "✓ Report deployed successfully"
                         return $true
@@ -633,20 +624,29 @@ function Deploy-Report {
                         throw "Report deployment failed. Details: $($opStatus | ConvertTo-Json -Depth 50)"
                     }
                 }
-                throw "Report deployment did not finish within 2 minutes."
+
+                throw "Report deployment polling timed out after 2 minutes."
             }
             else {
                 $response = $rawResponse.Content | ConvertFrom-Json
                 if ($response.id) {
-                    Write-Host "✓ Report deployed successfully, ID: $($response.id)"
+                    Write-Host "✓ Report deployed successfully. Report ID: $($response.id)"
                     return $true
                 } else {
-                    throw "API response did not contain a report ID. Response: $($rawResponse.Content)"
+                    throw "Report deployed but API response did not contain a report ID."
                 }
             }
-        } catch {
-            Write-Error "Report creation failed: $_"
-            return $false
+        }
+        catch {
+            $statusCode = $null
+            $errBody = $null
+            try { $statusCode = $_.Exception.Response.StatusCode } catch {}
+            try {
+                $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
+                $errBody = $reader.ReadToEnd()
+            } catch {}
+            
+            throw "Report creation failed. Status: $statusCode Body: $errBody"
         }
         
     } catch {
