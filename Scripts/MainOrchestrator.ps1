@@ -748,6 +748,8 @@ function Deploy-PBIPUsingFabricAPI {
         
         if (-not $reportSuccess) {
             throw "Report deployment failed"
+        }else{
+            Start-Sleep -Seconds 60 # wait a bit before verification
         }
         
         # Step 7: Wait for report to appear
