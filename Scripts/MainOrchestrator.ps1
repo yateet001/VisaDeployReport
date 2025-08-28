@@ -573,7 +573,7 @@ function Deploy-Report {
                 payloadType = 'InlineBase64'
             }
         }
-        Write-Host "✓ Collected $($parts.Count) parts for report deployment and the parts are:" $($parts.path) 
+        Write-Host "✓ Collected $($parts.Count) parts for report deployment and the parts are:" $($parts.Values) 
 
         # Build payload
         $itemsReportPayload = @{
