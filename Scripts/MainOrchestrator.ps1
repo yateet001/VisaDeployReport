@@ -592,7 +592,7 @@ function Deploy-Report {
         if (-not (Test-Path $reportJsonFile)) { throw "❌ report.json not found in $reportFolderPath" }
 
         # --- PATCH definition.pbir if needed ---
-        $defPath = Join-Path $ReportFolder 'definition.pbir'
+        $defPath = Join-Path $reportFolderPath 'definition.pbir'
 
         if (Test-Path $defPath) {
             $def = Get-Content $defPath -Raw | ConvertFrom-Json
@@ -646,7 +646,6 @@ function Deploy-Report {
                 }
             }
 
-
         Write-Host "✓ Collected $($parts.Count) parts from .Report"
         $parts | Select-Object -First 5 | ForEach-Object { Write-Host "   - $($_.path)" }
 
@@ -659,10 +658,10 @@ function Deploy-Report {
                 parts  = $parts
             }
         }
-        # if ($SemanticModelId) {
-        #     $itemsReportPayload["semanticModelId"] = $SemanticModelId
-        #     Write-Host "🔗 Binding report to semantic model ID: $SemanticModelId"
-        # }
+        if ($SemanticModelId) {
+            $itemsReportPayload["semanticModelId"] = $SemanticModelId
+            Write-Host "🔗 Binding report to semantic model ID: $SemanticModelId"
+        }
 
         $deploymentPayloadJson = $itemsReportPayload | ConvertTo-Json -Depth 50
         $headers = @{
@@ -720,11 +719,11 @@ function Deploy-Report {
                 if ($existingReport) {
                     $updateUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/items/$($existingReport.id)/updateDefinition"
                     $updatePayload = @{
-                        definition = @{
-                            format = 'PBIR'
-                            parts  = $parts
-                        }
+                    definition = @{
+                        format = 'PBIR'
+                        parts  = $parts
                     }
+                }
                     if ($SemanticModelId) { $updatePayload["semanticModelId"] = $SemanticModelId }
 
                     $updatePayloadJson = $updatePayload | ConvertTo-Json -Depth 50
