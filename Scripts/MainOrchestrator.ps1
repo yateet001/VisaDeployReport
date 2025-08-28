@@ -622,9 +622,9 @@ function Deploy-Report {
         # ---------- Payload ----------
         $itemsReportPayload = @{
             displayName = $ReportName
-            type        = 'PBIP'
+            type        = 'report'
             definition  = @{
-                format = 'Folder'
+                format = 'pbir'
                 parts  = $parts
             }
         }
