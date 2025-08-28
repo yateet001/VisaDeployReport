@@ -591,6 +591,37 @@ function Deploy-Report {
         $reportJsonFile = Join-Path $reportFolderPath "report.json"
         if (-not (Test-Path $reportJsonFile)) { throw "❌ report.json not found in $reportFolderPath" }
 
+        # --- PATCH definition.pbir if needed ---
+        $defPath = Join-Path $ReportFolder 'definition.pbir'
+
+        if (Test-Path $defPath) {
+            $def = Get-Content $defPath -Raw | ConvertFrom-Json
+
+            # Only patch if byConnection is missing/null
+            if (-not $def.datasetReference.byConnection) {
+                Write-Host "🔗 Patching definition.pbir to bind report → semanticModelId $SemanticModelId"
+
+                $def.datasetReference = @{
+                    byConnection = @{
+                        connectionString = "semanticmodelid=$SemanticModelId"
+                    }
+                }
+
+                # Remove any leftover byPath if it exists
+                if ($def.datasetReference.PSObject.Properties.Match('byPath')) {
+                    $def.datasetReference.PSObject.Properties.Remove('byPath')
+                }
+
+                $def | ConvertTo-Json -Depth 50 | Set-Content $defPath -Encoding UTF8
+            }
+            else {
+                Write-Host "✅ definition.pbir already bound to semantic model → $($def.datasetReference.byConnection.connectionString)"
+            }
+        }
+        else {
+            Write-Warning "⚠️ No definition.pbir found in $ReportFolder"
+        }
+
         # ---------- Build parts from .Report only ----------
         $allFiles = Get-ChildItem -Path $reportFolderPath -Recurse -File -Force |
             Where-Object { 
@@ -628,10 +659,10 @@ function Deploy-Report {
                 parts  = $parts
             }
         }
-        if ($SemanticModelId) {
-            $itemsReportPayload["semanticModelId"] = $SemanticModelId
-            Write-Host "🔗 Binding report to semantic model ID: $SemanticModelId"
-        }
+        # if ($SemanticModelId) {
+        #     $itemsReportPayload["semanticModelId"] = $SemanticModelId
+        #     Write-Host "🔗 Binding report to semantic model ID: $SemanticModelId"
+        # }
 
         $deploymentPayloadJson = $itemsReportPayload | ConvertTo-Json -Depth 50
         $headers = @{
