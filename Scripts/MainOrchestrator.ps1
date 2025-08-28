@@ -599,50 +599,42 @@ function Deploy-Report {
         $createUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/items"
 
         try {
-            # Initiate deployment
-            $response = Invoke-RestMethod -Uri $createUrl -Method Post -Headers $headers -Body $deploymentPayloadJson -PassThru -ErrorAction Stop
+            $response = Invoke-RestMethod -Uri $createUrl -Method Post -Headers $headers -Body $deploymentPayloadJson -ErrorAction Stop
 
-            # Capture operation URL from headers
-            $operationUrl = $response.Headers['operation-location']
-            if (-not $operationUrl) { $operationUrl = $response.Headers['Location'] }
-            if (-not $operationUrl) {
-                Write-Warning "⚠️ No operation URL returned. Deployment may be async."
-            } else {
-                Write-Host "ℹ️ Polling operation status at $operationUrl"
-                # Poll until operation completes
-                $maxWait = 180
-                $waited = 0
-                do {
-                    Start-Sleep -Seconds 5
-                    $opStatus = Invoke-RestMethod -Uri $operationUrl -Method Get -Headers $headers
-                    $waited += 5
-                } while ($opStatus.status -eq 'Running' -and $waited -lt $maxWait)
+            Start-Sleep -Seconds 60 # small delay to allow Fabric to finalize
 
-                if ($opStatus.status -ne 'Succeeded') {
-                    throw "❌ Report deployment failed or timed out. Status: $($opStatus.status)"
+            # Extract Report ID safely
+            $reportId = $null
+            if ($null -ne $response -and $response.id) {
+                $reportId = $response.id
+            }
+
+            if (-not $reportId) {
+                # Response is often empty (202 Accepted), so poll items API
+                Write-Host "ℹ️ No response body, polling items API to get report ID..."
+                $listUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/items?`$filter=displayName eq '$ReportName' and type eq 'Report'"
+                $listResponse = Invoke-RestMethod -Uri $listUrl -Method Get -Headers $headers
+                $existingReport = $listResponse.value | Select-Object -First 1
+                if ($existingReport) {
+                    $reportId = $existingReport.id
                 }
             }
 
-            # Deployment finished, fetch deployed report
-            Start-Sleep -Seconds 5
-            $listUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/items?`$filter=displayName eq '$ReportName' and type eq 'Report'"
-            $listResponse = Invoke-RestMethod -Uri $listUrl -Method Get -Headers $headers
-            $existingReport = $listResponse.value | Select-Object -First 1
-
-            if (-not $existingReport) {
-                throw "❌ Report deployed but not found in workspace after deployment."
+            if (-not $reportId) {
+                throw "❌ Report created but ID not found in response or items list."
             }
 
-            Write-Host "✅ Report deployed successfully. Report ID: $($existingReport.id)"
-            return $existingReport.id
+            Write-Host "✅ Report deployed successfully. Report ID: $reportId"
+            return $reportId
         }
         catch {
-            # Handle conflict (report exists) or other errors
             $statusCode = $null
             try { $statusCode = $_.Exception.Response.StatusCode.Value__ } catch {}
 
             if ($statusCode -eq 409) {
                 Write-Host "⚠️ Report already exists, updating definition..."
+
+                # Find existing report ID
                 $listUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/items?`$filter=displayName eq '$ReportName' and type eq 'Report'"
                 $listResponse = Invoke-RestMethod -Uri $listUrl -Method Get -Headers $headers
                 $existingReport = $listResponse.value | Select-Object -First 1
@@ -662,25 +654,8 @@ function Deploy-Report {
                     }
 
                     $updatePayloadJson = $updatePayload | ConvertTo-Json -Depth 50
-                    $updateResponse = Invoke-RestMethod -Uri $updateUrl -Method Post -Body $updatePayloadJson -Headers $headers -PassThru -ErrorAction Stop
 
-                    # Optional: Poll operation if returned
-                    $operationUrl = $updateResponse.Headers['operation-location']
-                    if ($operationUrl) {
-                        Write-Host "ℹ️ Polling update operation status..."
-                        $maxWait = 180
-                        $waited = 0
-                        do {
-                            Start-Sleep -Seconds 5
-                            $opStatus = Invoke-RestMethod -Uri $operationUrl -Method Get -Headers $headers
-                            $waited += 5
-                        } while ($opStatus.status -eq 'Running' -and $waited -lt $maxWait)
-
-                        if ($opStatus.status -ne 'Succeeded') {
-                            throw "❌ Report update failed or timed out. Status: $($opStatus.status)"
-                        }
-                    }
-
+                    Invoke-RestMethod -Uri $updateUrl -Method Post -Body $updatePayloadJson -Headers $headers -ErrorAction Stop
                     Write-Host "✅ Report updated successfully"
                     return $existingReport.id
                 }
@@ -689,7 +664,7 @@ function Deploy-Report {
                 }
             }
             else {
-                throw "❌ Report deployment failed. Status: $statusCode Message: $($_.Exception.Message)"
+                throw "❌ Report creation failed. Status: $statusCode Message: $($_.Exception.Message)"
             }
         }
     }
