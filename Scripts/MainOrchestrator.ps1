@@ -601,6 +601,7 @@ function Deploy-Report {
         try {
         $response = Invoke-RestMethod -Uri $createUrl -Method Post -Headers $headers -Body $deploymentPayloadJson
         $response | ConvertTo-Json -Depth 10 | Out-File "report_deploy_response.json"
+        Write-Host $response
             Start-Sleep -Seconds 5  # small delay to allow Fabric to finalize
 
             Write-Host "✅ Report deployed successfully"
