@@ -559,7 +559,7 @@ function Deploy-Report {
             throw "❌ report.json file not found in report folder"
         }
 
-        # Collect all files (report.json + StaticResources etc.)
+        # Collect all files
         $allFiles = Get-ChildItem -Path $ReportFolder -Recurse -File
         $parts = @()
         foreach ($file in $allFiles) {
@@ -601,27 +601,42 @@ function Deploy-Report {
         try {
             $response = Invoke-RestMethod -Uri $createUrl -Method Post -Headers $headers -Body $deploymentPayloadJson -ErrorAction Stop
 
-            Start-Sleep -Seconds 60 # small delay to allow Fabric to finalize
-
-            # Extract Report ID safely
+            # Extract Report ID if available
             $reportId = $null
             if ($null -ne $response -and $response.id) {
                 $reportId = $response.id
             }
 
             if (-not $reportId) {
-                # Response is often empty (202 Accepted), so poll items API
-                Write-Host "ℹ️ No response body, polling items API to get report ID..."
-                $listUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/items?`$filter=displayName eq '$ReportName' and type eq 'Report'"
-                $listResponse = Invoke-RestMethod -Uri $listUrl -Method Get -Headers $headers
-                $existingReport = $listResponse.value | Select-Object -First 1
-                if ($existingReport) {
-                    $reportId = $existingReport.id
+                Write-Host "ℹ️ No immediate response body, will poll until report becomes available..."
+            }
+
+            # --- Await-like polling loop ---
+            $listUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/items?`$filter=displayName eq '$ReportName' and type eq 'Report'"
+            $timeoutSeconds = 300
+            $intervalSeconds = 15
+            $elapsed = 0
+
+            while ($elapsed -lt $timeoutSeconds -and -not $reportId) {
+                try {
+                    $listResponse = Invoke-RestMethod -Uri $listUrl -Method Get -Headers $headers
+                    $existingReport = $listResponse.value | Select-Object -First 1
+                    if ($existingReport -and $existingReport.id) {
+                        $reportId = $existingReport.id
+                        break
+                    }
                 }
+                catch {
+                    Write-Warning "Polling error: $($_.Exception.Message)"
+                }
+
+                Write-Host "⏳ Report not ready yet. Waiting $intervalSeconds seconds..."
+                Start-Sleep -Seconds $intervalSeconds
+                $elapsed += $intervalSeconds
             }
 
             if (-not $reportId) {
-                throw "❌ Report created but ID not found in response or items list."
+                throw "❌ Report did not become available within $timeoutSeconds seconds."
             }
 
             Write-Host "✅ Report deployed successfully. Report ID: $reportId"
