@@ -544,7 +544,7 @@ function Deploy-Report {
         [string]$AccessToken,
         [Parameter(Mandatory=$true)]
         [string]$ReportName,     # e.g. "Demo Report"
-        [string]$SemanticModelId # 👈 Added optional parameter
+        [string]$SemanticModelId = $null
     )
 
     try {
@@ -552,19 +552,23 @@ function Deploy-Report {
         Write-Host "📦 Deploying PBIP report: $ReportName"
 
         # ---------- Resolve actual .Report folder ----------
+        # ---------- Resolve actual .Report folder ----------
         $reportFolderPath = $null
 
+        # Case A: caller passed the .Report folder directly
         if ($ReportFolder -and (Test-Path (Join-Path $ReportFolder 'report.json') -ErrorAction SilentlyContinue) -and
             (Test-Path (Join-Path $ReportFolder 'definition.pbir') -ErrorAction SilentlyContinue)) {
             $reportFolderPath = $ReportFolder
         }
         else {
+            # Case B: parent folder → try "<ReportName>.Report"
             $candidate = Join-Path $ReportFolder "$ReportName.Report"
             if ((Test-Path (Join-Path $candidate 'report.json') -ErrorAction SilentlyContinue) -and
                 (Test-Path (Join-Path $candidate 'definition.pbir') -ErrorAction SilentlyContinue)) {
                 $reportFolderPath = $candidate
             }
             else {
+                # Case C: discover a *.Report folder anywhere beneath ReportFolder
                 $found = Get-ChildItem -Path $ReportFolder -Directory -Recurse -ErrorAction SilentlyContinue |
                     Where-Object {
                         $_.Name -like '*.Report' -and
@@ -583,32 +587,39 @@ function Deploy-Report {
 
         $reportFolderPath = [System.IO.Path]::GetFullPath($reportFolderPath)
         Write-Host "📁 Using report folder: $reportFolderPath"
+        # ---------- Validate ----------
+        $reportJsonFile = Join-Path $reportFolderPath "report.json"
+        if (-not (Test-Path $reportJsonFile)) { throw "❌ report.json not found in $reportFolderPath" }
 
-        # ---------- Collect all payload parts ----------
+        # ---------- Build parts from .Report only ----------
         $allFiles = Get-ChildItem -Path $reportFolderPath -Recurse -File -Force |
             Where-Object { 
+                # Exclude .platform and hidden/system files
                 $_.FullName -notmatch '\\\.platform($|\\)' -and
                 -not $_.Attributes.HasFlag([IO.FileAttributes]::Hidden) -and
                 -not $_.Attributes.HasFlag([IO.FileAttributes]::System)
             }
 
-        $parts = @()
-        foreach ($file in $allFiles) {
-            $rel = $file.FullName.Substring($reportFolderPath.Length).TrimStart('\','/')
-            $rel = $rel -replace '\\','/'
+            $parts = @()
 
-            $b64 = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($file.FullName))
-            $parts += @{
-                path        = $rel
-                payload     = $b64
-                payloadType = 'InlineBase64'
+            foreach ($file in $allFiles) {
+                $rel = $file.FullName.Substring($reportFolderPath.Length).TrimStart('\','/')
+                $rel = $rel -replace '\\','/'
+
+                $b64 = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($file.FullName))
+
+                $parts += @{
+                    path        = $rel
+                    payload     = $b64
+                    payloadType = 'InlineBase64'
+                }
             }
-        }
+
 
         Write-Host "✓ Collected $($parts.Count) parts from .Report"
         $parts | Select-Object -First 5 | ForEach-Object { Write-Host "   - $($_.path)" }
 
-        # ---------- PBIP Payload ----------
+        # ---------- Payload ----------
         $itemsReportPayload = @{
             displayName = $ReportName
             type        = 'PBIP'
@@ -616,6 +627,10 @@ function Deploy-Report {
                 format = 'Folder'
                 parts  = $parts
             }
+        }
+        if ($SemanticModelId) {
+            $itemsReportPayload["semanticModelId"] = $SemanticModelId
+            Write-Host "🔗 Binding report to semantic model ID: $SemanticModelId"
         }
 
         $deploymentPayloadJson = $itemsReportPayload | ConvertTo-Json -Depth 50
@@ -635,7 +650,7 @@ function Deploy-Report {
 
             # Poll for visibility
             $filterName = $ReportName.Replace("'", "''")
-            $listUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/items?`$filter=displayName eq '$filterName' and type eq 'PBIP'"
+            $listUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/items?`$filter=displayName eq '$filterName' and type eq 'Report'"
             $timeoutSeconds = 300
             $intervalSeconds = 15
             $elapsed = 0
@@ -656,21 +671,10 @@ function Deploy-Report {
             if (-not $reportId) { throw "❌ Report did not become available within $timeoutSeconds seconds." }
 
             Write-Host "✅ Report deployed successfully. Report ID: $reportId"
-
-            # ---------- Semantic Model Binding ----------
-            if ($SemanticModelId) {
-                Write-Host "🔗 Binding report to semantic model: $SemanticModelId"
-                $bindUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/items/$reportId/updateConnection"
-                $bindPayload = @{
-                    semanticModelId = $SemanticModelId
-                } | ConvertTo-Json -Depth 5
-                Invoke-RestMethod -Uri $bindUrl -Method Post -Body $bindPayload -Headers $headers -ErrorAction Stop
-                Write-Host "✅ Report successfully bound to semantic model."
-            }
-
             return $reportId
         }
         catch {
+            # ---------- Handle 409 (exists → update) or bubble up ----------
             $statusCode = $null
             try { $statusCode = $_.Exception.Response.StatusCode.Value__ } catch {}
 
@@ -678,7 +682,7 @@ function Deploy-Report {
                 Write-Host "⚠️ Report already exists. Updating definition..."
 
                 $filterName = $ReportName.Replace("'", "''")
-                $listUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/items?`$filter=displayName eq '$filterName' and type eq 'PBIP'"
+                $listUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/items?`$filter=displayName eq '$filterName' and type eq 'Report'"
                 $listResponse = Invoke-RestMethod -Uri $listUrl -Method Get -Headers $headers
                 $existingReport = $listResponse.value | Select-Object -First 1
 
@@ -686,26 +690,15 @@ function Deploy-Report {
                     $updateUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/items/$($existingReport.id)/updateDefinition"
                     $updatePayload = @{
                         definition = @{
-                            format = 'Folder'
+                            format = 'PBIR'
                             parts  = $parts
                         }
                     }
+                    if ($SemanticModelId) { $updatePayload["semanticModelId"] = $SemanticModelId }
 
                     $updatePayloadJson = $updatePayload | ConvertTo-Json -Depth 50
                     Invoke-RestMethod -Uri $updateUrl -Method Post -Body $updatePayloadJson -Headers $headers -ErrorAction Stop
                     Write-Host "✅ Report updated successfully"
-
-                    # Rebind if SemanticModelId passed
-                    if ($SemanticModelId) {
-                        Write-Host "🔗 Rebinding report to semantic model: $SemanticModelId"
-                        $bindUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/items/$($existingReport.id)/updateConnection"
-                        $bindPayload = @{
-                            semanticModelId = $SemanticModelId
-                        } | ConvertTo-Json -Depth 5
-                        Invoke-RestMethod -Uri $bindUrl -Method Post -Body $bindPayload -Headers $headers -ErrorAction Stop
-                        Write-Host "✅ Report successfully rebound to semantic model."
-                    }
-
                     return $existingReport.id
                 }
                 else {
@@ -722,7 +715,6 @@ function Deploy-Report {
         return $null
     }
 }
-
 
 function Deploy-PBIPUsingFabricAPI {
     param(
