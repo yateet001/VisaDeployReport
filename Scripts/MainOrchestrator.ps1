@@ -593,19 +593,22 @@ function Deploy-Report {
 
         # ---------- Build parts from .Report only ----------
         $allFiles = Get-ChildItem -Path $reportFolderPath -Recurse -File -Force
-        $baseLen  = ($reportFolderPath.TrimEnd('\','/')).Length
         $parts = @()
 
         foreach ($file in $allFiles) {
-            $rel = $file.FullName.Substring($baseLen).TrimStart('\','/')
-            $rel = $rel -replace '\\','/'
+            # Trim relative to actual .Report folder
+            $rel = $file.FullName.Substring($reportFolderPath.Length).TrimStart('\','/')
+            $rel = $rel -replace '\\','/'   # Normalize for API
+
             $b64 = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($file.FullName))
+
             $parts += @{
                 path        = $rel
                 payload     = $b64
                 payloadType = 'InlineBase64'
             }
         }
+
 
         Write-Host "✓ Collected $($parts.Count) parts from .Report"
         $parts | Select-Object -First 5 | ForEach-Object { Write-Host "   - $($_.path)" }
