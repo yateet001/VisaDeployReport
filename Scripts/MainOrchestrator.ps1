@@ -292,60 +292,57 @@ function Wait-ForDeploymentCompletion {
         [Parameter(Mandatory=$true)]
         [string]$ItemName,
         [Parameter(Mandatory=$true)]
-        [string]$ItemType,
+        [string]$ItemType,   # "Report" or "SemanticModel"
         [int]$MaxWaitMinutes = 5
     )
     
-    $maxWaitTime = $MaxWaitMinutes * 60 # Convert to seconds
+    $maxWaitTime = $MaxWaitMinutes * 60
     $waitTime = 0
-    $checkInterval = 15 # Check every 15 seconds
+    $checkInterval = 15
     
-    Write-Host "Waiting for $ItemType '$ItemName' to appear in workspace..."
+    Write-Host "⏳ Waiting for $ItemType '$ItemName' to appear in workspace..."
+    
+    $headers = @{
+        "Authorization" = "Bearer $AccessToken"
+        "Content-Type"  = "application/json"
+    }
     
     do {
         Start-Sleep -Seconds $checkInterval
         $waitTime += $checkInterval
         
         try {
-            $headers = @{
-                "Authorization" = "Bearer $AccessToken"
-                "Content-Type" = "application/json"
-            }
+            # Always use unified items endpoint in Fabric
+            $uri = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/items"
+            $response = Invoke-RestMethod -Uri $uri -Method Get -Headers $headers -ErrorAction Stop
             
-            $item = $null
-            if ($ItemType -eq "SemanticModel") {
-                $uriSm = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/semanticModels"
-                $responseSm = Invoke-RestMethod -Uri $uriSm -Method Get -Headers $headers
-                $item = $responseSm.value | Where-Object { $_.displayName -eq $ItemName }
-            } elseif ($ItemType -eq "Report") {
-                $uriRpt = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/reports"
-                $responseRpt = Invoke-RestMethod -Uri $uriRpt -Method Get -Headers $headers
-                $item = $responseRpt.value | Where-Object { $_.displayName -eq $ItemName }
-            }
-            
-            if (-not $item) {
-                # Fallback to aggregated items API
-                $uri = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/items"
-                $response = Invoke-RestMethod -Uri $uri -Method Get -Headers $headers
-                $item = $response.value | Where-Object { $_.displayName -eq $ItemName }
+            $item = $response.value | Where-Object { 
+                $_.displayName -eq $ItemName -and $_.type -eq $ItemType 
             }
             
             if ($item) {
-                Write-Host "✓ $ItemType '$ItemName' found in workspace"
-                return $true
+                if ($item.state -and $item.state -ne "Active") {
+                    Write-Host "⚠️ $ItemType found but state = $($item.state). Still waiting..."
+                }
+                else {
+                    Write-Host "✅ $ItemType '$ItemName' is ready in workspace"
+                    return $true
+                }
             }
-            
-            Write-Host "⏳ Waiting... ($waitTime/$maxWaitTime seconds)"
+            else {
+                Write-Host "⏳ Still waiting... ($waitTime/$maxWaitTime seconds)"
+            }
         }
         catch {
-            Write-Warning "Error checking for item: $_"
+            Write-Warning "Error checking for item: $($_.Exception.Message)"
         }
         
     } while ($waitTime -lt $maxWaitTime)
     
-    Write-Warning "⚠️ $ItemType '$ItemName' not found after $MaxWaitMinutes minutes"
+    Write-Warning "❌ $ItemType '$ItemName' not found after $MaxWaitMinutes minutes"
     return $false
 }
+
 
 function Verify-DeploymentResult {
     param(
@@ -540,13 +537,13 @@ function Deploy-SemanticModel {
 function Deploy-Report {
     param(
         [Parameter(Mandatory=$true)]
-        [string]$ReportFolder,
+        [string]$ReportFolder,   # Path to the parent folder (e.g., "Demo Report")
         [Parameter(Mandatory=$true)]
         [string]$WorkspaceId,
         [Parameter(Mandatory=$true)]
         [string]$AccessToken,
         [Parameter(Mandatory=$true)]
-        [string]$ReportName,
+        [string]$ReportName,     # e.g. "Demo Report"
         [string]$SemanticModelId = $null
     )
 
@@ -554,17 +551,24 @@ function Deploy-Report {
         Write-Host "--- STEP 6: REPORT DEPLOYMENT ---"
         Write-Host "📦 Deploying PBIP report: $ReportName"
 
-        $reportJsonFile = Join-Path $ReportFolder "report.json"
-        if (-not (Test-Path $reportJsonFile)) {
-            throw "❌ report.json file not found in report folder"
+        # Look specifically inside "<ReportName>.Report" folder
+        $reportFolderPath = Join-Path $ReportFolder "$ReportName.Report"
+
+        if (-not (Test-Path $reportFolderPath)) {
+            throw "❌ Report folder not found: $reportFolderPath"
         }
 
-        # Collect all files
-        $allFiles = Get-ChildItem -Path $ReportFolder -Recurse -File
+        $reportJsonFile = Join-Path $reportFolderPath "report.json"
+        if (-not (Test-Path $reportJsonFile)) {
+            throw "❌ report.json file not found in $reportFolderPath"
+        }
+
+        # Collect only files inside the .Report folder
+        $allFiles = Get-ChildItem -Path $reportFolderPath -Recurse -File
         $parts = @()
         foreach ($file in $allFiles) {
-            $relativePath = ($file.FullName.Substring($ReportFolder.Length) -replace '^[\\/]+','')
-            $relativePath = $relativePath -replace '\\','/'
+            $relativePath = ($file.FullName.Substring($reportFolderPath.Length) -replace '^[\\/]+','')
+            $relativePath = $relativePath -replace '\\','/'   # normalize slashes
             $bytes = [System.IO.File]::ReadAllBytes($file.FullName)
             $b64 = [Convert]::ToBase64String($bytes)
             $parts += @{
@@ -573,7 +577,7 @@ function Deploy-Report {
                 payloadType = 'InlineBase64'
             }
         }
-        Write-Host "✓ Collected $($parts.Count) parts for report deployment"
+        Write-Host "✓ Collected $($parts.Count) parts from $reportFolderPath"
 
         # Build payload
         $itemsReportPayload = @{
@@ -688,6 +692,7 @@ function Deploy-Report {
         return $null
     }
 }
+
 
 
 function Deploy-PBIPUsingFabricAPI {
