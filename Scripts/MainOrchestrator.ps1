@@ -573,7 +573,7 @@ function Deploy-Report {
                 payloadType = 'InlineBase64'
             }
         }
-        Write-Host "✓ Collected $($parts.Count) parts for report deployment and the parts are:" $($parts.Values) 
+        Write-Host "✓ Collected $($parts.Count) parts for report deployment"
 
         # Build payload
         $itemsReportPayload = @{
@@ -591,7 +591,6 @@ function Deploy-Report {
         }
 
         $deploymentPayloadJson = $itemsReportPayload | ConvertTo-Json -Depth 50
-
         $headers = @{
             "Authorization" = "Bearer $AccessToken"
             "Content-Type"  = "application/json"
@@ -600,28 +599,32 @@ function Deploy-Report {
         $createUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/items"
 
         try {
-        $response = Invoke-RestMethod -Uri $createUrl -Method Post -Headers $headers -Body $deploymentPayloadJson
-        $response | ConvertTo-Json -Depth 10 | Out-File "report_deploy_response.json"
-        Write-Host $response
+            $response = Invoke-RestMethod -Uri $createUrl -Method Post -Headers $headers -Body $deploymentPayloadJson -ErrorAction Stop
+
             Start-Sleep -Seconds 5  # small delay to allow Fabric to finalize
 
-            Write-Host "✅ Report deployed successfully"
-
-            # 🔑 Extract Report ID safely
+            # Extract Report ID safely
             $reportId = $null
-            if ($null -ne $response) {
-                if ($response.id) {
-                    $reportId = $response.id
-                } elseif ($response.value -and $response.value[0].id) {
-                    $reportId = $response.value[0].id
+            if ($null -ne $response -and $response.id) {
+                $reportId = $response.id
+            }
+
+            if (-not $reportId) {
+                # Response is often empty (202 Accepted), so poll items API
+                Write-Host "ℹ️ No response body, polling items API to get report ID..."
+                $listUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/items?`$filter=displayName eq '$ReportName' and type eq 'Report'"
+                $listResponse = Invoke-RestMethod -Uri $listUrl -Method Get -Headers $headers
+                $existingReport = $listResponse.value | Select-Object -First 1
+                if ($existingReport) {
+                    $reportId = $existingReport.id
                 }
             }
 
             if (-not $reportId) {
-                throw "❌ Report created but ID not found in response. Full Response: $(ConvertTo-Json $response -Depth 50 -Compress)"
+                throw "❌ Report created but ID not found in response or items list."
             }
 
-            Write-Host "Report ID: $reportId"
+            Write-Host "✅ Report deployed successfully. Report ID: $reportId"
             return $reportId
         }
         catch {
