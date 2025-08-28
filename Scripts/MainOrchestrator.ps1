@@ -543,15 +543,13 @@ function Deploy-Report {
         [Parameter(Mandatory=$true)]
         [string]$AccessToken,
         [Parameter(Mandatory=$true)]
-        [string]$ReportName,     # e.g. "Demo Report"
-        [string]$SemanticModelId = $null
+        [string]$ReportName      # e.g. "Demo Report"
     )
 
     try {
         Write-Host "--- STEP 6: REPORT DEPLOYMENT ---"
         Write-Host "📦 Deploying PBIP report: $ReportName"
 
-        # ---------- Resolve actual .Report folder ----------
         # ---------- Resolve actual .Report folder ----------
         $reportFolderPath = $null
 
@@ -587,11 +585,8 @@ function Deploy-Report {
 
         $reportFolderPath = [System.IO.Path]::GetFullPath($reportFolderPath)
         Write-Host "📁 Using report folder: $reportFolderPath"
-        # ---------- Validate ----------
-        $reportJsonFile = Join-Path $reportFolderPath "report.json"
-        if (-not (Test-Path $reportJsonFile)) { throw "❌ report.json not found in $reportFolderPath" }
 
-        # ---------- Build parts from .Report only ----------
+        # ---------- Collect all payload parts ----------
         $allFiles = Get-ChildItem -Path $reportFolderPath -Recurse -File -Force |
             Where-Object { 
                 # Exclude .platform and hidden/system files
@@ -600,37 +595,30 @@ function Deploy-Report {
                 -not $_.Attributes.HasFlag([IO.FileAttributes]::System)
             }
 
-            $parts = @()
+        $parts = @()
+        foreach ($file in $allFiles) {
+            $rel = $file.FullName.Substring($reportFolderPath.Length).TrimStart('\','/')
+            $rel = $rel -replace '\\','/'
 
-            foreach ($file in $allFiles) {
-                $rel = $file.FullName.Substring($reportFolderPath.Length).TrimStart('\','/')
-                $rel = $rel -replace '\\','/'
-
-                $b64 = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($file.FullName))
-
-                $parts += @{
-                    path        = $rel
-                    payload     = $b64
-                    payloadType = 'InlineBase64'
-                }
+            $b64 = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($file.FullName))
+            $parts += @{
+                path        = $rel
+                payload     = $b64
+                payloadType = 'InlineBase64'
             }
-
+        }
 
         Write-Host "✓ Collected $($parts.Count) parts from .Report"
         $parts | Select-Object -First 5 | ForEach-Object { Write-Host "   - $($_.path)" }
 
-        # ---------- Payload ----------
+        # ---------- PBIP Payload ----------
         $itemsReportPayload = @{
             displayName = $ReportName
-            type        = 'Report'
+            type        = 'PBIP'
             definition  = @{
-                format = 'PBIR'
+                format = 'Folder'
                 parts  = $parts
             }
-        }
-        if ($SemanticModelId) {
-            $itemsReportPayload["semanticModelId"] = $SemanticModelId
-            Write-Host "🔗 Binding report to semantic model ID: $SemanticModelId"
         }
 
         $deploymentPayloadJson = $itemsReportPayload | ConvertTo-Json -Depth 50
@@ -650,7 +638,7 @@ function Deploy-Report {
 
             # Poll for visibility
             $filterName = $ReportName.Replace("'", "''")
-            $listUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/items?`$filter=displayName eq '$filterName' and type eq 'Report'"
+            $listUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/items?`$filter=displayName eq '$filterName' and type eq 'PBIP'"
             $timeoutSeconds = 300
             $intervalSeconds = 15
             $elapsed = 0
@@ -682,7 +670,7 @@ function Deploy-Report {
                 Write-Host "⚠️ Report already exists. Updating definition..."
 
                 $filterName = $ReportName.Replace("'", "''")
-                $listUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/items?`$filter=displayName eq '$filterName' and type eq 'Report'"
+                $listUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/items?`$filter=displayName eq '$filterName' and type eq 'PBIP'"
                 $listResponse = Invoke-RestMethod -Uri $listUrl -Method Get -Headers $headers
                 $existingReport = $listResponse.value | Select-Object -First 1
 
@@ -690,11 +678,10 @@ function Deploy-Report {
                     $updateUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/items/$($existingReport.id)/updateDefinition"
                     $updatePayload = @{
                         definition = @{
-                            format = 'PBIR'
+                            format = 'Folder'
                             parts  = $parts
                         }
                     }
-                    if ($SemanticModelId) { $updatePayload["semanticModelId"] = $SemanticModelId }
 
                     $updatePayloadJson = $updatePayload | ConvertTo-Json -Depth 50
                     Invoke-RestMethod -Uri $updateUrl -Method Post -Body $updatePayloadJson -Headers $headers -ErrorAction Stop
@@ -715,6 +702,7 @@ function Deploy-Report {
         return $null
     }
 }
+
 
 function Deploy-PBIPUsingFabricAPI {
     param(
