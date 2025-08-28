@@ -592,22 +592,28 @@ function Deploy-Report {
         if (-not (Test-Path $reportJsonFile)) { throw "❌ report.json not found in $reportFolderPath" }
 
         # ---------- Build parts from .Report only ----------
-        $allFiles = Get-ChildItem -Path $reportFolderPath -Recurse -File -Force
-        $parts = @()
-
-        foreach ($file in $allFiles) {
-            # Trim relative to actual .Report folder
-            $rel = $file.FullName.Substring($reportFolderPath.Length).TrimStart('\','/')
-            $rel = $rel -replace '\\','/'   # Normalize for API
-
-            $b64 = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($file.FullName))
-
-            $parts += @{
-                path        = $rel
-                payload     = $b64
-                payloadType = 'InlineBase64'
+        $allFiles = Get-ChildItem -Path $reportFolderPath -Recurse -File -Force |
+            Where-Object { 
+                # Exclude .platform and hidden/system files
+                $_.FullName -notmatch '\\\.platform($|\\)' -and
+                -not $_.Attributes.HasFlag([IO.FileAttributes]::Hidden) -and
+                -not $_.Attributes.HasFlag([IO.FileAttributes]::System)
             }
-        }
+
+            $parts = @()
+
+            foreach ($file in $allFiles) {
+                $rel = $file.FullName.Substring($reportFolderPath.Length).TrimStart('\','/')
+                $rel = $rel -replace '\\','/'
+
+                $b64 = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($file.FullName))
+
+                $parts += @{
+                    path        = $rel
+                    payload     = $b64
+                    payloadType = 'InlineBase64'
+                }
+            }
 
 
         Write-Host "✓ Collected $($parts.Count) parts from .Report"
