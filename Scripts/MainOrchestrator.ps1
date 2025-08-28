@@ -537,7 +537,7 @@ function Deploy-SemanticModel {
 function Deploy-Report {
     param(
         [Parameter(Mandatory=$true)]
-        [string]$ReportFolder,   # Path to the parent folder (e.g., "Demo Report")
+        [string]$ReportFolder,   # Can be either the parent folder (e.g. ".../Demo Report") OR the ".Report" folder
         [Parameter(Mandatory=$true)]
         [string]$WorkspaceId,
         [Parameter(Mandatory=$true)]
@@ -551,13 +551,42 @@ function Deploy-Report {
         Write-Host "--- STEP 6: REPORT DEPLOYMENT ---"
         Write-Host "📦 Deploying PBIP report: $ReportName"
 
-        # Look specifically inside "<ReportName>.Report" folder
-        $reportFolderPath = Join-Path $ReportFolder "$ReportName.Report"
+        # --- Resolve the actual .Report folder path robustly ---
+        $reportFolderPath = $null
 
-        if (-not (Test-Path $reportFolderPath)) {
-            throw "❌ Report folder not found: $reportFolderPath"
+        # CASE A: Caller already passed the .Report folder
+        if (Test-Path (Join-Path $ReportFolder 'report.json') -and
+            Test-Path (Join-Path $ReportFolder 'definition.pbir')) {
+            $reportFolderPath = $ReportFolder
+        }
+        else {
+            # CASE B: Caller passed the parent; check "<ReportName>.Report"
+            $candidate = Join-Path $ReportFolder "$ReportName.Report"
+            if (Test-Path (Join-Path $candidate 'report.json')) {
+                $reportFolderPath = $candidate
+            }
+            else {
+                # CASE C: Auto-discover a single *.Report folder under $ReportFolder (recurse)
+                $found = Get-ChildItem -Path $ReportFolder -Recurse -Directory |
+                    Where-Object {
+                        $_.Name -like '*.Report' -and
+                        (Test-Path (Join-Path $_.FullName 'report.json')) -and
+                        (Test-Path (Join-Path $_.FullName 'definition.pbir'))
+                    } |
+                    Sort-Object FullName |
+                    Select-Object -First 1
+
+                if ($found) { $reportFolderPath = $found.FullName }
+            }
         }
 
+        if (-not $reportFolderPath) {
+            throw "❌ Report folder not found or invalid. Checked: `"$ReportFolder`", `"$candidate`" and subfolders."
+        }
+
+        Write-Host "📁 Using report folder: $reportFolderPath"
+
+        # Validate required files
         $reportJsonFile = Join-Path $reportFolderPath "report.json"
         if (-not (Test-Path $reportJsonFile)) {
             throw "❌ report.json file not found in $reportFolderPath"
@@ -577,9 +606,12 @@ function Deploy-Report {
                 payloadType = 'InlineBase64'
             }
         }
-        Write-Host "✓ Collected $($parts.Count) parts from $reportFolderPath"
 
-        # Build payload
+        Write-Host "✓ Collected $($parts.Count) parts from .Report"
+        Write-Host "🔎 Example part paths:"
+        $parts | Select-Object -First 5 | ForEach-Object { Write-Host "   - $($_.path)" }
+
+        # Build payload (unchanged)
         $itemsReportPayload = @{
             displayName = $ReportName
             type        = 'Report'
@@ -615,8 +647,9 @@ function Deploy-Report {
                 Write-Host "ℹ️ No immediate response body, will poll until report becomes available..."
             }
 
-            # --- Await-like polling loop ---
-            $listUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/items?`$filter=displayName eq '$ReportName' and type eq 'Report'"
+            # --- Await-like polling loop (unchanged) ---
+            $filterName = $ReportName.Replace("'", "''") # OData-escape single quotes
+            $listUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/items?`$filter=displayName eq '$filterName' and type eq 'Report'"
             $timeoutSeconds = 300
             $intervalSeconds = 15
             $elapsed = 0
@@ -654,7 +687,8 @@ function Deploy-Report {
                 Write-Host "⚠️ Report already exists, updating definition..."
 
                 # Find existing report ID
-                $listUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/items?`$filter=displayName eq '$ReportName' and type eq 'Report'"
+                $filterName = $ReportName.Replace("'", "''")
+                $listUrl = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/items?`$filter=displayName eq '$filterName' and type eq 'Report'"
                 $listResponse = Invoke-RestMethod -Uri $listUrl -Method Get -Headers $headers
                 $existingReport = $listResponse.value | Select-Object -First 1
 
@@ -692,8 +726,6 @@ function Deploy-Report {
         return $null
     }
 }
-
-
 
 function Deploy-PBIPUsingFabricAPI {
     param(
