@@ -654,7 +654,7 @@ function Deploy-Report {
             }
         }
         if ($SemanticModelId) {
-            $itemsReportPayload["semanticModelId"] = $SemanticModelId
+            $itemsReportPayload["semanticmodelid"] = $SemanticModelId
             Write-Host "🔗 Binding report to semantic model ID: $SemanticModelId"
         }
 
