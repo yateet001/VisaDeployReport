@@ -591,36 +591,31 @@ function Deploy-Report {
         $reportJsonFile = Join-Path $reportFolderPath "report.json"
         if (-not (Test-Path $reportJsonFile)) { throw "❌ report.json not found in $reportFolderPath" }
 
-        # --- PATCH definition.pbir if needed ---
+        # --- Force bind definition.pbir to semanticModelId ---
         $defPath = Join-Path $reportFolderPath 'definition.pbir'
 
         if (Test-Path $defPath) {
+            Write-Host "🔗 Forcing definition.pbir to bind report → semanticModelId $SemanticModelId"
+
+            # Load and overwrite datasetReference
             $def = Get-Content $defPath -Raw | ConvertFrom-Json
-
-            # Only patch if byConnection is missing/null
-            if (-not $def.datasetReference.byConnection) {
-                Write-Host "🔗 Patching definition.pbir to bind report → semanticModelId $SemanticModelId"
-
-                $def.datasetReference = @{
-                    byConnection = @{
-                        connectionString = "semanticmodelid=$SemanticModelId"
-                    }
+            $def.datasetReference = @{
+                byConnection = @{
+                    connectionString = "semanticmodelid=$SemanticModelId"
                 }
-
-                # Remove any leftover byPath if it exists
-                if ($def.datasetReference.PSObject.Properties.Match('byPath')) {
-                    $def.datasetReference.PSObject.Properties.Remove('byPath')
-                }
-
-                $def | ConvertTo-Json -Depth 50 | Set-Content $defPath -Encoding UTF8
             }
-            else {
-                Write-Host "✅ definition.pbir already bound to semantic model → $($def.datasetReference.byConnection.connectionString)"
-            }
+
+            # Write back to file
+            $jsonOut = $def | ConvertTo-Json -Depth 50
+            $jsonOut | Set-Content $defPath -Encoding UTF8
+
+            Write-Host "✅ Updated definition.pbir:"
+            Write-Host $jsonOut
         }
         else {
-            Write-Warning "⚠️ No definition.pbir found in $ReportFolder"
+            Write-Warning "⚠️ No definition.pbir found in $reportFolderPath"
         }
+
 
         # ---------- Build parts from .Report only ----------
         $allFiles = Get-ChildItem -Path $reportFolderPath -Recurse -File -Force |
